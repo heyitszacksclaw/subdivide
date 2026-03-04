@@ -178,7 +178,7 @@ function addOverlayLayers(map, overlayData) {
     id: 'site-boundary-fill',
     type: 'fill',
     source: 'site-boundary',
-    paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.06 }
+    paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.1 }
   });
   map.addLayer({
     id: 'site-boundary-line',
@@ -206,13 +206,13 @@ function addOverlayLayers(map, overlayData) {
     id: 'lots-fill',
     type: 'fill',
     source: 'lots',
-    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.35 }
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.45 }
   });
   map.addLayer({
     id: 'lots-line',
     type: 'line',
     source: 'lots',
-    paint: { 'line-color': ['get', 'color'], 'line-width': 1.5 }
+    paint: { 'line-color': ['get', 'color'], 'line-width': 2 }
   });
 
   // Home footprints
@@ -220,7 +220,7 @@ function addOverlayLayers(map, overlayData) {
     id: 'homes-fill',
     type: 'fill',
     source: 'homes',
-    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.7 }
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.8 }
   });
   map.addLayer({
     id: 'homes-line',
