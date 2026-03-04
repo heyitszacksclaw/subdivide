@@ -93,161 +93,157 @@ const defaultFinancials = {
   capRate: 5,
 };
 
-// Build all the GeoJSON data for map overlays
-function buildOverlayData(results, originLat, originLon, widthFt, depthFt) {
-  const siteBoundary = siteRectToGeoJSON(originLat, originLon, widthFt, depthFt);
-  
-  const boundaryGeoJSON = {
-    type: 'FeatureCollection',
-    features: [{
-      type: 'Feature',
-      geometry: { type: 'Polygon', coordinates: [siteBoundary] },
-      properties: {}
-    }]
-  };
-  
-  const roadsGeoJSON = {
-    type: 'FeatureCollection',
-    features: results.roads.map(road => ({
-      type: 'Feature',
-      geometry: {
-        type: 'Polygon',
-        coordinates: [rectToGeoJSON(originLat, originLon, road.x, road.y, road.width, road.height)]
-      },
-      properties: {}
-    }))
-  };
-  
-  const lotsGeoJSON = {
-    type: 'FeatureCollection',
-    features: results.lots.map(lot => ({
-      type: 'Feature',
-      properties: {
-        color: lot.conforming ? lot.color : '#ef4444',
-        conforming: lot.conforming,
-        id: lot.id
-      },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [boundaryToGeoJSON(originLat, originLon, lot.lotBoundary)]
+/**
+ * Canvas overlay: Renders subdivision geometry directly as HTML Canvas
+ * on top of the MapLibre map. This bypasses MapLibre's WebGL layer system
+ * which can silently fail with certain style configurations.
+ */
+function CanvasOverlay({ map, results, originLat, originLon, widthFt, depthFt }) {
+  const canvasRef = useRef(null);
+  const animFrameRef = useRef(null);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !map) return;
+
+    const container = map.getContainer();
+    const rect = container.getBoundingClientRect();
+
+    // Match canvas size to map container (with devicePixelRatio for crisp rendering)
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    // Helper: convert [lon, lat] to pixel coordinates
+    const toPixel = (lngLat) => {
+      const point = map.project(lngLat);
+      return [point.x, point.y];
+    };
+
+    // Helper: draw a polygon from GeoJSON ring coordinates
+    const drawPolygon = (ring, fillColor, strokeColor, lineWidth, lineDash) => {
+      if (!ring || ring.length < 3) return;
+      ctx.beginPath();
+      const [sx, sy] = toPixel(ring[0]);
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < ring.length; i++) {
+        const [px, py] = toPixel(ring[i]);
+        ctx.lineTo(px, py);
       }
-    }))
-  };
-  
-  const homesGeoJSON = {
-    type: 'FeatureCollection',
-    features: results.lots
-      .filter(lot => lot.conforming)
-      .map(lot => ({
-        type: 'Feature',
-        properties: { color: lot.color },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [boundaryToGeoJSON(originLat, originLon, lot.homeBoundary)]
-        }
-      }))
-  };
-  
-  const labelsGeoJSON = {
-    type: 'FeatureCollection',
-    features: results.lots.map(lot => {
+      ctx.closePath();
+      if (fillColor) {
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+      }
+      if (strokeColor) {
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = lineWidth || 1;
+        if (lineDash) ctx.setLineDash(lineDash);
+        else ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    };
+
+    // 1. Draw site boundary (white dashed outline with subtle fill)
+    const siteBoundary = [
+      feetToLatLon(originLat, originLon, 0, 0),
+      feetToLatLon(originLat, originLon, widthFt, 0),
+      feetToLatLon(originLat, originLon, widthFt, depthFt),
+      feetToLatLon(originLat, originLon, 0, depthFt),
+      feetToLatLon(originLat, originLon, 0, 0),
+    ];
+    drawPolygon(siteBoundary, 'rgba(255,255,255,0.06)', '#ffffff', 2.5, [8, 4]);
+
+    // 2. Draw roads
+    results.roads.forEach(road => {
+      const roadRing = rectToGeoJSON(originLat, originLon, road.x, road.y, road.width, road.height);
+      drawPolygon(roadRing, 'rgba(71,85,105,0.8)', 'rgba(148,163,184,0.8)', 1.5);
+    });
+
+    // 3. Draw lot fills and outlines
+    results.lots.forEach(lot => {
+      const lotRing = boundaryToGeoJSON(originLat, originLon, lot.lotBoundary);
+      const color = lot.conforming ? lot.color : '#ef4444';
+      // Parse hex to rgba for fill
+      const r = parseInt(color.slice(1, 3), 16);
+      const g = parseInt(color.slice(3, 5), 16);
+      const b = parseInt(color.slice(5, 7), 16);
+      drawPolygon(lotRing, `rgba(${r},${g},${b},0.35)`, color, 1.5);
+    });
+
+    // 4. Draw home footprints (only conforming)
+    results.lots.filter(l => l.conforming).forEach(lot => {
+      const homeRing = boundaryToGeoJSON(originLat, originLon, lot.homeBoundary);
+      const color = lot.color;
+      const r = parseInt(color.slice(1, 3), 16);
+      const g = parseInt(color.slice(3, 5), 16);
+      const b = parseInt(color.slice(5, 7), 16);
+      drawPolygon(homeRing, `rgba(${r},${g},${b},0.75)`, 'rgba(255,255,255,0.4)', 0.5);
+    });
+
+    // 5. Draw lot number labels
+    ctx.font = 'bold 11px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    results.lots.forEach(lot => {
       const center = getBoundaryCenterLatLon(originLat, originLon, lot.lotBoundary);
-      return {
-        type: 'Feature',
-        properties: { label: String(lot.id) },
-        geometry: { type: 'Point', coordinates: center }
-      };
-    })
-  };
-  
-  return { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON };
-}
+      const [px, py] = toPixel(center);
+      // Text halo
+      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(String(lot.id), px, py);
+      // Text fill
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(String(lot.id), px, py);
+    });
 
-function addOverlayLayers(map, overlayData) {
-  const { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON } = overlayData;
+  }, [map, results, originLat, originLon, widthFt, depthFt]);
 
-  // Add sources
-  try { map.addSource('site-boundary', { type: 'geojson', data: boundaryGeoJSON }); } catch(e) { console.warn('src site-boundary:', e); }
-  try { map.addSource('roads', { type: 'geojson', data: roadsGeoJSON }); } catch(e) { console.warn('src roads:', e); }
-  try { map.addSource('lots', { type: 'geojson', data: lotsGeoJSON }); } catch(e) { console.warn('src lots:', e); }
-  try { map.addSource('homes', { type: 'geojson', data: homesGeoJSON }); } catch(e) { console.warn('src homes:', e); }
-  try { map.addSource('lot-labels', { type: 'geojson', data: labelsGeoJSON }); } catch(e) { console.warn('src labels:', e); }
+  useEffect(() => {
+    if (!map) return;
 
-  const layers = [
-    { id: 'site-boundary-fill', type: 'fill', source: 'site-boundary',
-      paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.1 } },
-    { id: 'site-boundary-line', type: 'line', source: 'site-boundary',
-      paint: { 'line-color': '#ffffff', 'line-width': 2.5, 'line-dasharray': [4, 2] } },
-    { id: 'roads-fill', type: 'fill', source: 'roads',
-      paint: { 'fill-color': '#475569', 'fill-opacity': 0.8 } },
-    { id: 'roads-line', type: 'line', source: 'roads',
-      paint: { 'line-color': '#94a3b8', 'line-width': 1.5 } },
-    { id: 'lots-fill', type: 'fill', source: 'lots',
-      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.45 } },
-    { id: 'lots-line', type: 'line', source: 'lots',
-      paint: { 'line-color': ['get', 'color'], 'line-width': 2 } },
-    { id: 'homes-fill', type: 'fill', source: 'homes',
-      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.8 } },
-    { id: 'homes-line', type: 'line', source: 'homes',
-      paint: { 'line-color': '#ffffff', 'line-width': 0.5, 'line-opacity': 0.5 } },
-    { id: 'lot-labels-text', type: 'symbol', source: 'lot-labels',
-      layout: { 'text-field': ['get', 'label'], 'text-size': 12,
-        'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
-      paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,0.9)', 'text-halo-width': 1.5 } },
-  ];
+    const onRender = () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = requestAnimationFrame(draw);
+    };
 
-  layers.forEach(layer => {
-    try { map.addLayer(layer); } catch(e) { console.warn('layer', layer.id, ':', e.message); }
-  });
+    // Redraw on every map render frame (move, zoom, rotate)
+    map.on('render', onRender);
+    // Also draw immediately
+    draw();
 
-  console.log('Overlay layers added. Sources:', Object.keys(map.getStyle().sources));
-  console.log('Layers:', map.getStyle().layers.map(l => l.id));
-}
+    return () => {
+      map.off('render', onRender);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [map, draw]);
 
-function updateOverlaySources(map, overlayData) {
-  const { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON } = overlayData;
-  
-  const s1 = map.getSource('site-boundary');
-  const s2 = map.getSource('roads');
-  const s3 = map.getSource('lots');
-  const s4 = map.getSource('homes');
-  const s5 = map.getSource('lot-labels');
-  
-  if (s1 && s2 && s3 && s4 && s5) {
-    s1.setData(boundaryGeoJSON);
-    s2.setData(roadsGeoJSON);
-    s3.setData(lotsGeoJSON);
-    s4.setData(homesGeoJSON);
-    s5.setData(labelsGeoJSON);
-    return true;
-  }
-  return false;
-}
+  // Also redraw when data changes
+  useEffect(() => {
+    draw();
+  }, [draw]);
 
-// Draggable corner markers for the site rectangle
-function createDragHandles(map, corners, onDrag) {
-  const markers = corners.map((lngLat, idx) => {
-    const el = document.createElement('div');
-    el.className = 'drag-handle';
-    el.style.cssText = `
-      width: 14px; height: 14px;
-      background: #ffffff;
-      border: 2px solid #3b82f6;
-      border-radius: 50%;
-      cursor: ${idx === 0 || idx === 2 ? 'nwse-resize' : 'nesw-resize'};
-      box-shadow: 0 0 6px rgba(0,0,0,0.4);
-    `;
-    
-    const marker = new maplibregl.Marker({ element: el, draggable: true })
-      .setLngLat(lngLat)
-      .addTo(map);
-    
-    marker.on('drag', () => onDrag(idx, marker.getLngLat()));
-    marker.on('dragend', () => onDrag(idx, marker.getLngLat(), true));
-    
-    return marker;
-  });
-  return markers;
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+        zIndex: 10,
+      }}
+    />
+  );
 }
 
 
@@ -271,12 +267,12 @@ export default function App() {
   // UI state
   const [financialsCollapsed, setFinancialsCollapsed] = useState(false);
   const [mapStyle, setMapStyle] = useState('dark');
+  const [mapInstance, setMapInstance] = useState(null);
   
   // Map refs
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
-  const overlayAddedRef = useRef(false);
   
   // Compute subdivision
   const results = useMemo(() => {
@@ -299,11 +295,6 @@ export default function App() {
     const halfWidthDeg = (widthFt / 3.28084) / (111320 * Math.cos((lat * Math.PI) / 180)) / 2;
     return lon - halfWidthDeg;
   }, [lon, widthFt, lat]);
-
-  // Build overlay data
-  const overlayData = useMemo(() => {
-    return buildOverlayData(results, originLat, originLon, widthFt, depthFt);
-  }, [results, originLat, originLon, widthFt, depthFt]);
 
   // Corner positions for drag handles [SW, SE, NE, NW]
   const corners = useMemo(() => {
@@ -372,7 +363,7 @@ export default function App() {
     if (mapRef.current) {
       mapRef.current.remove();
       mapRef.current = null;
-      overlayAddedRef.current = false;
+      setMapInstance(null);
       markersRef.current.forEach(m => m.remove());
       markersRef.current = [];
     }
@@ -390,14 +381,6 @@ export default function App() {
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     
     map.on('load', () => {
-      // Add overlay layers with current data
-      const currentOverlay = buildOverlayData(
-        computeSubdivision({ widthFt, depthFt, roadWidthFt, parcelTypes, financials }),
-        originLat, originLon, widthFt, depthFt
-      );
-      addOverlayLayers(map, currentOverlay);
-      overlayAddedRef.current = true;
-      
       // Add drag handle markers
       const currentCorners = [
         feetToLatLon(originLat, originLon, 0, 0),
@@ -405,7 +388,32 @@ export default function App() {
         feetToLatLon(originLat, originLon, widthFt, depthFt),
         feetToLatLon(originLat, originLon, 0, depthFt),
       ];
-      markersRef.current = createDragHandles(map, currentCorners, handleCornerDrag);
+      
+      markersRef.current = currentCorners.map((lngLat, idx) => {
+        const el = document.createElement('div');
+        el.className = 'drag-handle';
+        el.style.cssText = `
+          width: 16px; height: 16px;
+          background: #ffffff;
+          border: 2.5px solid #3b82f6;
+          border-radius: 50%;
+          cursor: ${idx === 0 || idx === 2 ? 'nwse-resize' : 'nesw-resize'};
+          box-shadow: 0 0 8px rgba(0,0,0,0.5);
+          z-index: 20;
+        `;
+        
+        const marker = new maplibregl.Marker({ element: el, draggable: true })
+          .setLngLat(lngLat)
+          .addTo(map);
+        
+        marker.on('drag', () => handleCornerDrag(idx, marker.getLngLat()));
+        marker.on('dragend', () => handleCornerDrag(idx, marker.getLngLat(), true));
+        
+        return marker;
+      });
+      
+      // Set mapInstance state to trigger CanvasOverlay rendering
+      setMapInstance(map);
       
       // Fit map to site
       const center = feetToLatLon(originLat, originLon, widthFt / 2, depthFt / 2);
@@ -423,17 +431,14 @@ export default function App() {
       markersRef.current = [];
       map.remove();
       mapRef.current = null;
-      overlayAddedRef.current = false;
+      setMapInstance(null);
     };
   }, [mapStyle]); // eslint-disable-line react-hooks/exhaustive-deps
   
-  // Update overlays when data changes (without rebuilding the map)
+  // Update drag handle positions when data changes
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !overlayAddedRef.current) return;
-    
-    // Update sources
-    updateOverlaySources(map, overlayData);
+    if (!map) return;
     
     // Update drag handle positions
     if (markersRef.current.length === 4) {
@@ -446,7 +451,7 @@ export default function App() {
     const center = feetToLatLon(originLat, originLon, widthFt / 2, depthFt / 2);
     map.easeTo({ center, duration: 200 });
     
-  }, [overlayData, corners, originLat, originLon, widthFt, depthFt]);
+  }, [corners, originLat, originLon, widthFt, depthFt]);
   
   // Handle address/coordinate submit
   const handleLocationSubmit = useCallback(() => {
@@ -874,8 +879,17 @@ export default function App() {
         
         {/* Right Content */}
         <div className="right-content">
-          <div className="map-container">
+          <div className="map-container" style={{ position: 'relative' }}>
             <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+            {/* Canvas overlay renders all subdivision geometry */}
+            <CanvasOverlay
+              map={mapInstance}
+              results={results}
+              originLat={originLat}
+              originLon={originLon}
+              widthFt={widthFt}
+              depthFt={depthFt}
+            />
             <div className="dimension-overlay">
               <strong>{widthFt}ft × {depthFt}ft</strong>{' '}
               <span>({(widthFt * depthFt / 43560).toFixed(2)} acres)</span>
