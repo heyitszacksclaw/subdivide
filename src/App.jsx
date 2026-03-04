@@ -10,12 +10,18 @@ import {
 } from './coordinates';
 import { generateCSV, generateDXF, formatCurrency, formatNumber, formatPercent, formatFullCurrency } from './exports';
 
-// Public Mapbox demo token — set via VITE_MAPBOX_TOKEN env var or fallback to Mapbox's public demo token
-mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || 'pk.eyJ1IjoibWFwYm' + '94IiwiYSI6ImNpejY4NXV' + 'ycTA2emYycXBndHRqcmZ3N3gifQ.rJcFIG214AriISLbB6B5aw';
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || '';
 
 const DEFAULT_LAT = 33.4484;
 const DEFAULT_LON = -112.0740;
 const DEFAULT_COLORS = ['#3b82f6', '#22c55e', '#f97316'];
+
+const MAP_STYLES = {
+  satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
+  dark: 'mapbox://styles/mapbox/dark-v11',
+  streets: 'mapbox://styles/mapbox/streets-v12',
+  light: 'mapbox://styles/mapbox/light-v11',
+};
 
 function createDefaultParcelType(index) {
   return {
@@ -43,6 +49,131 @@ const defaultFinancials = {
   capRate: 5,
 };
 
+function addMapLayers(map) {
+  // Add empty sources for our overlays
+  if (!map.getSource('site-boundary')) {
+    map.addSource('site-boundary', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+  }
+  if (!map.getSource('roads')) {
+    map.addSource('roads', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+  }
+  if (!map.getSource('lots')) {
+    map.addSource('lots', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+  }
+  if (!map.getSource('homes')) {
+    map.addSource('homes', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+  }
+  if (!map.getSource('lot-labels')) {
+    map.addSource('lot-labels', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+  }
+  
+  // Site boundary
+  if (!map.getLayer('site-boundary-fill')) {
+    map.addLayer({
+      id: 'site-boundary-fill',
+      type: 'fill',
+      source: 'site-boundary',
+      paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.08 }
+    });
+    map.addLayer({
+      id: 'site-boundary-line',
+      type: 'line',
+      source: 'site-boundary',
+      paint: { 'line-color': '#ffffff', 'line-width': 2.5, 'line-dasharray': [4, 2] }
+    });
+  }
+  
+  // Roads
+  if (!map.getLayer('roads-fill')) {
+    map.addLayer({
+      id: 'roads-fill',
+      type: 'fill',
+      source: 'roads',
+      paint: { 'fill-color': '#475569', 'fill-opacity': 0.75 }
+    });
+    map.addLayer({
+      id: 'roads-line',
+      type: 'line',
+      source: 'roads',
+      paint: { 'line-color': '#94a3b8', 'line-width': 1 }
+    });
+  }
+  
+  // Lots
+  if (!map.getLayer('lots-fill')) {
+    map.addLayer({
+      id: 'lots-fill',
+      type: 'fill',
+      source: 'lots',
+      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3 }
+    });
+    map.addLayer({
+      id: 'lots-line',
+      type: 'line',
+      source: 'lots',
+      paint: { 'line-color': ['get', 'color'], 'line-width': 1.5 }
+    });
+    map.addLayer({
+      id: 'lots-nonconforming',
+      type: 'fill',
+      source: 'lots',
+      filter: ['==', ['get', 'conforming'], false],
+      paint: { 'fill-color': '#ef4444', 'fill-opacity': 0.4 }
+    });
+  }
+  
+  // Home footprints
+  if (!map.getLayer('homes-fill')) {
+    map.addLayer({
+      id: 'homes-fill',
+      type: 'fill',
+      source: 'homes',
+      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.65 }
+    });
+    map.addLayer({
+      id: 'homes-line',
+      type: 'line',
+      source: 'homes',
+      paint: { 'line-color': '#ffffff', 'line-width': 0.5, 'line-opacity': 0.4 }
+    });
+  }
+  
+  // Lot labels
+  if (!map.getLayer('lot-labels-text')) {
+    map.addLayer({
+      id: 'lot-labels-text',
+      type: 'symbol',
+      source: 'lot-labels',
+      layout: {
+        'text-field': ['get', 'label'],
+        'text-size': 11,
+        'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+        'text-allow-overlap': true
+      },
+      paint: {
+        'text-color': '#ffffff',
+        'text-halo-color': 'rgba(0,0,0,0.8)',
+        'text-halo-width': 1.2
+      }
+    });
+  }
+}
+
 export default function App() {
   // Site state
   const [lat, setLat] = useState(DEFAULT_LAT);
@@ -63,6 +194,9 @@ export default function App() {
   // UI state
   const [financialsCollapsed, setFinancialsCollapsed] = useState(false);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapStyle, setMapStyle] = useState('dark');
+  const [tokenInput, setTokenInput] = useState(MAPBOX_TOKEN);
+  const [showTokenInput, setShowTokenInput] = useState(!MAPBOX_TOKEN);
   
   // Map refs
   const mapContainerRef = useRef(null);
@@ -81,7 +215,6 @@ export default function App() {
   
   // Origin lat/lon = bottom-left of site rectangle
   const originLat = useMemo(() => {
-    // Center the rectangle on the lat/lon input
     const halfDepthDeg = (depthFt / 3.28084) / 111320 / 2;
     return lat - halfDepthDeg;
   }, [lat, depthFt]);
@@ -93,11 +226,20 @@ export default function App() {
 
   // Initialize map
   useEffect(() => {
-    if (mapRef.current) return;
+    if (!tokenInput) return;
+    
+    // Clean up existing map
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+      setMapLoaded(false);
+    }
+    
+    mapboxgl.accessToken = tokenInput;
     
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/satellite-streets-v12',
+      style: MAP_STYLES[mapStyle] || MAP_STYLES.dark,
       center: [lon, lat],
       zoom: 17,
       attributionControl: true
@@ -106,149 +248,16 @@ export default function App() {
     map.addControl(new mapboxgl.NavigationControl(), 'top-right');
     
     map.on('load', () => {
+      addMapLayers(map);
       setMapLoaded(true);
-      
-      // Add empty sources for our overlays
-      map.addSource('site-boundary', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      });
-      
-      map.addSource('roads', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      });
-      
-      map.addSource('lots', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      });
-      
-      map.addSource('homes', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      });
-      
-      map.addSource('lot-labels', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      });
-      
-      // Site boundary layer
-      map.addLayer({
-        id: 'site-boundary-fill',
-        type: 'fill',
-        source: 'site-boundary',
-        paint: {
-          'fill-color': '#ffffff',
-          'fill-opacity': 0.05
-        }
-      });
-      
-      map.addLayer({
-        id: 'site-boundary-line',
-        type: 'line',
-        source: 'site-boundary',
-        paint: {
-          'line-color': '#ffffff',
-          'line-width': 2,
-          'line-dasharray': [4, 2]
-        }
-      });
-      
-      // Roads layer
-      map.addLayer({
-        id: 'roads-fill',
-        type: 'fill',
-        source: 'roads',
-        paint: {
-          'fill-color': '#64748b',
-          'fill-opacity': 0.7
-        }
-      });
-      
-      map.addLayer({
-        id: 'roads-line',
-        type: 'line',
-        source: 'roads',
-        paint: {
-          'line-color': '#94a3b8',
-          'line-width': 1
-        }
-      });
-      
-      // Lots layer
-      map.addLayer({
-        id: 'lots-fill',
-        type: 'fill',
-        source: 'lots',
-        paint: {
-          'fill-color': ['get', 'color'],
-          'fill-opacity': 0.25
-        }
-      });
-      
-      map.addLayer({
-        id: 'lots-line',
-        type: 'line',
-        source: 'lots',
-        paint: {
-          'line-color': ['get', 'color'],
-          'line-width': 1.5
-        }
-      });
-      
-      // Nonconforming lots highlight
-      map.addLayer({
-        id: 'lots-nonconforming',
-        type: 'fill',
-        source: 'lots',
-        filter: ['==', ['get', 'conforming'], false],
-        paint: {
-          'fill-color': '#ef4444',
-          'fill-opacity': 0.3
-        }
-      });
-      
-      // Home footprints
-      map.addLayer({
-        id: 'homes-fill',
-        type: 'fill',
-        source: 'homes',
-        paint: {
-          'fill-color': ['get', 'color'],
-          'fill-opacity': 0.6
-        }
-      });
-      
-      map.addLayer({
-        id: 'homes-line',
-        type: 'line',
-        source: 'homes',
-        paint: {
-          'line-color': '#ffffff',
-          'line-width': 0.5,
-          'line-opacity': 0.5
-        }
-      });
-      
-      // Lot labels
-      map.addLayer({
-        id: 'lot-labels-text',
-        type: 'symbol',
-        source: 'lot-labels',
-        layout: {
-          'text-field': ['get', 'label'],
-          'text-size': 11,
-          'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'],
-          'text-allow-overlap': true
-        },
-        paint: {
-          'text-color': '#ffffff',
-          'text-halo-color': 'rgba(0,0,0,0.7)',
-          'text-halo-width': 1
-        }
-      });
+    });
+    
+    map.on('error', (e) => {
+      console.warn('Map error:', e.error?.message || e.message);
+      // If satellite fails, fall back to dark
+      if (mapStyle === 'satellite' && e.error?.status === 403) {
+        setMapStyle('dark');
+      }
     });
     
     mapRef.current = map;
@@ -257,7 +266,7 @@ export default function App() {
       map.remove();
       mapRef.current = null;
     };
-  }, []);
+  }, [tokenInput, mapStyle]);
   
   // Update map overlays when results change
   useEffect(() => {
@@ -335,20 +344,16 @@ export default function App() {
       features: labelFeatures
     });
     
+    // Fly to center
+    const center = feetToLatLon(originLat, originLon, widthFt / 2, depthFt / 2);
+    map.easeTo({ center, duration: 300 });
+    
   }, [results, originLat, originLon, widthFt, depthFt, mapLoaded]);
-  
-  // Fly to location when lat/lon changes
-  const flyToLocation = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.flyTo({ center: [lon, lat], zoom: 17, duration: 1500 });
-  }, [lat, lon]);
   
   // Handle address/coordinate submit
   const handleLocationSubmit = useCallback(() => {
     const input = addressInput.trim();
     
-    // Check if it's a lat/lon pair
     const coordMatch = input.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
     if (coordMatch) {
       const newLat = parseFloat(coordMatch[1]);
@@ -363,8 +368,8 @@ export default function App() {
       return;
     }
     
-    // Try geocoding with Mapbox
-    fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(input)}.json?access_token=${mapboxgl.accessToken}&limit=1`)
+    if (!tokenInput) return;
+    fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(input)}.json?access_token=${tokenInput}&limit=1`)
       .then(r => r.json())
       .then(data => {
         if (data.features && data.features.length > 0) {
@@ -378,7 +383,7 @@ export default function App() {
         }
       })
       .catch(err => console.error('Geocoding error:', err));
-  }, [addressInput]);
+  }, [addressInput, tokenInput]);
   
   // Parcel type handlers
   const updateParcelType = useCallback((index, field, value) => {
@@ -419,7 +424,6 @@ export default function App() {
   
   const downloadPDF = useCallback(async () => {
     const { jsPDF } = await import('jspdf');
-    const html2canvas = (await import('html2canvas')).default;
     
     const pdf = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
     
@@ -431,58 +435,99 @@ export default function App() {
     pdf.setFont('helvetica', 'normal');
     pdf.text(`Location: ${lat.toFixed(4)}, ${lon.toFixed(4)}`, 0.5, 1.0);
     pdf.text(`Date: ${new Date().toLocaleDateString()}`, 0.5, 1.25);
-    pdf.text(`Site: ${widthFt}ft × ${depthFt}ft`, 0.5, 1.5);
+    pdf.text(`Site: ${widthFt}ft x ${depthFt}ft (${(widthFt * depthFt / 43560).toFixed(2)} acres)`, 0.5, 1.5);
     
-    // Stats
+    // Two-column layout
     let y = 2.0;
+    const col2 = 5.5;
+    
     pdf.setFontSize(11);
     pdf.setFont('helvetica', 'bold');
     pdf.text('SUBDIVISIONS', 0.5, y);
     y += 0.25;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
-    pdf.text(`Parcels: ${results.conformingLots}`, 0.5, y); y += 0.2;
-    pdf.text(`Units: ${results.conformingLots}`, 0.5, y); y += 0.2;
-    pdf.text(`NRSF: ${formatNumber(results.totalNRSF)} sq ft`, 0.5, y); y += 0.35;
+    pdf.text(`Parcels: ${results.conformingLots}`, 0.5, y); y += 0.18;
+    pdf.text(`Units: ${results.conformingLots}`, 0.5, y); y += 0.18;
+    pdf.text(`NRSF: ${formatNumber(results.totalNRSF)} sq ft`, 0.5, y); y += 0.3;
     
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(11);
     pdf.text('HOUSING / ROAD', 0.5, y); y += 0.25;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
-    pdf.text(`Area Road: ${formatNumber(results.roadAreaFt2)} sq ft`, 0.5, y); y += 0.2;
-    pdf.text(`Linear Road: ${formatNumber(results.roadLinearFt)} LF`, 0.5, y); y += 0.35;
+    pdf.text(`Area Road: ${formatNumber(results.roadAreaFt2)} sq ft`, 0.5, y); y += 0.18;
+    pdf.text(`Linear Road: ${formatNumber(results.roadLinearFt)} LF`, 0.5, y); y += 0.3;
     
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(11);
     pdf.text('SUMMARY', 0.5, y); y += 0.25;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
-    pdf.text(`Revenue: ${formatFullCurrency(results.revenue)}`, 0.5, y); y += 0.2;
-    pdf.text(`Expenses: ${formatFullCurrency(results.expenses)}`, 0.5, y); y += 0.2;
-    pdf.text(`NOI: ${formatFullCurrency(results.noi)}`, 0.5, y); y += 0.35;
+    pdf.text(`Revenue: ${formatFullCurrency(results.revenue)}`, 0.5, y); y += 0.18;
+    pdf.text(`Expenses: ${formatFullCurrency(results.expenses)}`, 0.5, y); y += 0.18;
+    pdf.text(`NOI: ${formatFullCurrency(results.noi)}`, 0.5, y); y += 0.3;
+    
+    // Column 2
+    let y2 = 2.0;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(11);
+    pdf.text('COSTS', col2, y2); y2 += 0.25;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(9);
+    pdf.text(`Land: ${formatFullCurrency(results.landCosts)}`, col2, y2); y2 += 0.18;
+    pdf.text(`Hard: ${formatFullCurrency(results.hardCosts)}`, col2, y2); y2 += 0.18;
+    pdf.text(`Soft: ${formatFullCurrency(results.softCosts)}`, col2, y2); y2 += 0.18;
+    pdf.text(`Earthwork: $0 (V1 placeholder)`, col2, y2); y2 += 0.18;
+    pdf.text(`Total: ${formatFullCurrency(results.totalCosts)}`, col2, y2); y2 += 0.3;
     
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(11);
-    pdf.text('COSTS', 0.5, y); y += 0.25;
+    pdf.text('METRICS', col2, y2); y2 += 0.25;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
-    pdf.text(`Land: ${formatFullCurrency(results.landCosts)}`, 0.5, y); y += 0.2;
-    pdf.text(`Hard: ${formatFullCurrency(results.hardCosts)}`, 0.5, y); y += 0.2;
-    pdf.text(`Soft: ${formatFullCurrency(results.softCosts)}`, 0.5, y); y += 0.2;
-    pdf.text(`Total: ${formatFullCurrency(results.totalCosts)}`, 0.5, y); y += 0.35;
+    pdf.text(`Yield on Cost: ${formatPercent(results.yieldOnCost)}`, col2, y2); y2 += 0.18;
+    pdf.text(`Cap Rate: ${formatPercent(results.capRate)}`, col2, y2); y2 += 0.18;
+    pdf.text(`Value: ${formatFullCurrency(results.value)}`, col2, y2); y2 += 0.3;
     
+    // Lot table
+    const maxY = Math.max(y, y2) + 0.3;
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(11);
-    pdf.text('METRICS', 0.5, y); y += 0.25;
+    pdf.text('LOT SCHEDULE', 0.5, maxY);
+    
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'bold');
+    const headers = ['#', 'Type', 'Width', 'Depth', 'Area', 'NRSF', 'Price', 'Conf.'];
+    const colWidths = [0.3, 0.8, 0.5, 0.5, 0.7, 0.7, 0.8, 0.4];
+    let tx = 0.5;
+    const headerY = maxY + 0.25;
+    headers.forEach((h, i) => {
+      pdf.text(h, tx, headerY);
+      tx += colWidths[i];
+    });
+    
     pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(9);
-    pdf.text(`Yield on Cost: ${formatPercent(results.yieldOnCost)}`, 0.5, y); y += 0.2;
-    pdf.text(`Cap Rate: ${formatPercent(results.capRate)}`, 0.5, y); y += 0.2;
-    pdf.text(`Value: ${formatFullCurrency(results.value)}`, 0.5, y); y += 0.3;
+    let ly = headerY + 0.18;
+    const lotsToShow = results.lots.slice(0, 30);
+    lotsToShow.forEach(lot => {
+      tx = 0.5;
+      const vals = [
+        String(lot.id), lot.parcelTypeName, 
+        lot.lotWidthFt.toFixed(0) + "'", lot.lotDepthFt.toFixed(0) + "'",
+        formatNumber(lot.areaFt2) + ' sf', formatNumber(lot.nrsf) + ' sf',
+        '$' + lot.pricePerLot.toLocaleString(), lot.conforming ? 'Yes' : 'No'
+      ];
+      vals.forEach((v, i) => {
+        pdf.text(v, tx, ly);
+        tx += colWidths[i];
+      });
+      ly += 0.15;
+      if (ly > 7.8) return;
+    });
     
     // Footer
-    pdf.setFontSize(8);
+    pdf.setFontSize(7);
     pdf.setTextColor(128);
     pdf.text('Generated by Subdivide — Preliminary feasibility only. Not for permitting, engineering, or construction use.', 0.5, 8.0);
     
@@ -502,9 +547,19 @@ export default function App() {
     const a = document.createElement('a');
     a.href = url;
     a.download = `${prefix}_subdivision_package.zip`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, [results, lat, lon, widthFt, depthFt]);
+  
+  const handleTokenSubmit = useCallback(() => {
+    if (tokenInput.startsWith('pk.')) {
+      setShowTokenInput(false);
+      // Try satellite first with user token
+      setMapStyle('satellite');
+    }
+  }, [tokenInput]);
   
   const activeType = parcelTypes[activeParcelTab] || parcelTypes[0];
   
@@ -523,7 +578,16 @@ export default function App() {
         </div>
         <span className="tagline">Single-Family Subdivision Feasibility</span>
         <div className="header-right">
-          <span style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>v1.0 MVP</span>
+          {/* Map style toggle */}
+          <div className="street-toggle" style={{ width: 'auto', minWidth: 180 }}>
+            {Object.keys(MAP_STYLES).map(s => (
+              <button key={s} className={`street-toggle-btn ${mapStyle === s ? 'active' : ''}`}
+                onClick={() => setMapStyle(s)}
+                style={{ textTransform: 'capitalize', fontSize: 10 }}
+              >{s}</button>
+            ))}
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>v1.0</span>
         </div>
       </header>
       
@@ -531,6 +595,30 @@ export default function App() {
       <div className="app-body">
         {/* Left Panel */}
         <aside className="left-panel">
+          {/* Mapbox Token */}
+          {showTokenInput && (
+            <div className="panel-section" style={{ background: 'var(--color-surface-2)' }}>
+              <div className="panel-section-header" style={{ cursor: 'default' }}>
+                <span className="panel-section-title">Mapbox API Token</span>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                Enter your Mapbox public token (pk...) to load the map. 
+                Get one free at <a href="https://account.mapbox.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)' }}>account.mapbox.com</a>
+              </p>
+              <div className="address-row">
+                <input
+                  className="form-input"
+                  value={tokenInput}
+                  onChange={e => setTokenInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleTokenSubmit()}
+                  placeholder="pk.eyJ1..."
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}
+                />
+                <button className="btn btn-primary" onClick={handleTokenSubmit} disabled={!tokenInput.startsWith('pk.')}>Load</button>
+              </div>
+            </div>
+          )}
+          
           {/* Location */}
           <div className="panel-section">
             <div className="panel-section-header" style={{ cursor: 'default' }}>
@@ -559,32 +647,21 @@ export default function App() {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Width (ft)</label>
-                <input
-                  className="form-input"
-                  type="number"
-                  value={widthFt}
-                  onChange={e => setWidthFt(Math.max(50, Number(e.target.value) || 0))}
-                />
+                <input className="form-input" type="number" value={widthFt}
+                  onChange={e => setWidthFt(Math.max(50, Number(e.target.value) || 0))} />
               </div>
               <div className="form-group">
                 <label className="form-label">Depth (ft)</label>
-                <input
-                  className="form-input"
-                  type="number"
-                  value={depthFt}
-                  onChange={e => setDepthFt(Math.max(50, Number(e.target.value) || 0))}
-                />
+                <input className="form-input" type="number" value={depthFt}
+                  onChange={e => setDepthFt(Math.max(50, Number(e.target.value) || 0))} />
               </div>
             </div>
             <div className="form-group">
               <label className="form-label">Street Side</label>
               <div className="street-toggle">
                 {['N', 'S', 'E', 'W'].map(dir => (
-                  <button
-                    key={dir}
-                    className={`street-toggle-btn ${streetSide === dir ? 'active' : ''}`}
-                    onClick={() => setStreetSide(dir)}
-                  >{dir}</button>
+                  <button key={dir} className={`street-toggle-btn ${streetSide === dir ? 'active' : ''}`}
+                    onClick={() => setStreetSide(dir)}>{dir}</button>
                 ))}
               </div>
             </div>
@@ -595,155 +672,94 @@ export default function App() {
             <div className="panel-section-header" style={{ cursor: 'default' }}>
               <span className="panel-section-title">Parcel Types</span>
             </div>
-            
-            {/* Tabs */}
             <div className="parcel-tabs">
               {parcelTypes.map((pt, i) => (
-                <button
-                  key={pt.id}
-                  className={`parcel-tab ${i === activeParcelTab ? 'active' : ''}`}
-                  onClick={() => setActiveParcelTab(i)}
-                >
-                  <span className="tab-dot" style={{ background: pt.color }} />
-                  {pt.name}
+                <button key={pt.id} className={`parcel-tab ${i === activeParcelTab ? 'active' : ''}`}
+                  onClick={() => setActiveParcelTab(i)}>
+                  <span className="tab-dot" style={{ background: pt.color }} />{pt.name}
                 </button>
               ))}
             </div>
-            
-            {/* Active parcel type fields */}
             {activeType && (
               <div>
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Name</label>
-                    <input
-                      className="form-input form-input-sm"
-                      value={activeType.name}
-                      onChange={e => updateParcelType(activeParcelTab, 'name', e.target.value)}
-                    />
+                    <input className="form-input form-input-sm" value={activeType.name}
+                      onChange={e => updateParcelType(activeParcelTab, 'name', e.target.value)} />
                   </div>
                   <div className="form-group" style={{ maxWidth: 70 }}>
                     <label className="form-label">Weight</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.weight}
-                      onChange={e => updateParcelType(activeParcelTab, 'weight', Math.max(0, Number(e.target.value) || 0))}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.weight}
+                      onChange={e => updateParcelType(activeParcelTab, 'weight', Math.max(0, Number(e.target.value) || 0))} />
                   </div>
                   <div className="form-group" style={{ maxWidth: 50 }}>
                     <label className="form-label">Color</label>
-                    <input
-                      type="color"
-                      value={activeType.color}
+                    <input type="color" value={activeType.color}
                       onChange={e => updateParcelType(activeParcelTab, 'color', e.target.value)}
-                      style={{ width: '100%', height: 28, padding: 0, border: 'none', cursor: 'pointer', background: 'transparent' }}
-                    />
+                      style={{ width: '100%', height: 28, padding: 0, border: 'none', cursor: 'pointer', background: 'transparent' }} />
                   </div>
                 </div>
-                
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Lot Width (ft)</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.lotWidthFt}
-                      onChange={e => updateParcelType(activeParcelTab, 'lotWidthFt', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.lotWidthFt}
+                      onChange={e => updateParcelType(activeParcelTab, 'lotWidthFt', Number(e.target.value) || 0)} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Lot Depth (ft)</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.lotDepthFt}
-                      onChange={e => updateParcelType(activeParcelTab, 'lotDepthFt', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.lotDepthFt}
+                      onChange={e => updateParcelType(activeParcelTab, 'lotDepthFt', Number(e.target.value) || 0)} />
                   </div>
                 </div>
-                
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Home Width (ft)</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.homeWidthFt}
-                      onChange={e => updateParcelType(activeParcelTab, 'homeWidthFt', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.homeWidthFt}
+                      onChange={e => updateParcelType(activeParcelTab, 'homeWidthFt', Number(e.target.value) || 0)} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Home Depth (ft)</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.homeDepthFt}
-                      onChange={e => updateParcelType(activeParcelTab, 'homeDepthFt', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.homeDepthFt}
+                      onChange={e => updateParcelType(activeParcelTab, 'homeDepthFt', Number(e.target.value) || 0)} />
                   </div>
                   <div className="form-group" style={{ maxWidth: 70 }}>
                     <label className="form-label">Levels</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.unitLevels}
-                      onChange={e => updateParcelType(activeParcelTab, 'unitLevels', Math.max(1, Number(e.target.value) || 1))}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.unitLevels}
+                      onChange={e => updateParcelType(activeParcelTab, 'unitLevels', Math.max(1, Number(e.target.value) || 1))} />
                   </div>
                 </div>
-                
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Front Setback</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.setbackFront}
-                      onChange={e => updateParcelType(activeParcelTab, 'setbackFront', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.setbackFront}
+                      onChange={e => updateParcelType(activeParcelTab, 'setbackFront', Number(e.target.value) || 0)} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Side Setback</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.setbackSide}
-                      onChange={e => updateParcelType(activeParcelTab, 'setbackSide', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.setbackSide}
+                      onChange={e => updateParcelType(activeParcelTab, 'setbackSide', Number(e.target.value) || 0)} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Back Setback</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={activeType.setbackBack}
-                      onChange={e => updateParcelType(activeParcelTab, 'setbackBack', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={activeType.setbackBack}
+                      onChange={e => updateParcelType(activeParcelTab, 'setbackBack', Number(e.target.value) || 0)} />
                   </div>
                 </div>
-                
                 <div className="form-group">
                   <label className="form-label">Price Per Lot ($)</label>
-                  <input
-                    className="form-input form-input-sm"
-                    type="number"
-                    value={activeType.pricePerLot}
-                    onChange={e => updateParcelType(activeParcelTab, 'pricePerLot', Number(e.target.value) || 0)}
-                  />
+                  <input className="form-input form-input-sm" type="number" value={activeType.pricePerLot}
+                    onChange={e => updateParcelType(activeParcelTab, 'pricePerLot', Number(e.target.value) || 0)} />
                 </div>
               </div>
             )}
-            
             <div className="parcel-add-remove">
               {parcelTypes.length < 3 && (
                 <button className="btn btn-ghost btn-sm" onClick={addParcelType}>+ Add Type</button>
               )}
               {parcelTypes.length > 1 && (
                 <button className="btn btn-ghost btn-sm" onClick={() => removeParcelType(activeParcelTab)}
-                  style={{ color: 'var(--color-error)' }}>
-                  Remove
-                </button>
+                  style={{ color: 'var(--color-error)' }}>Remove</button>
               )}
             </div>
           </div>
@@ -755,12 +771,8 @@ export default function App() {
             </div>
             <div className="form-group">
               <label className="form-label">Road Width (ft)</label>
-              <input
-                className="form-input"
-                type="number"
-                value={roadWidthFt}
-                onChange={e => setRoadWidthFt(Math.max(10, Number(e.target.value) || 0))}
-              />
+              <input className="form-input" type="number" value={roadWidthFt}
+                onChange={e => setRoadWidthFt(Math.max(10, Number(e.target.value) || 0))} />
             </div>
           </div>
           
@@ -774,50 +786,29 @@ export default function App() {
               <div>
                 <div className="form-group" style={{ marginBottom: 8 }}>
                   <label className="form-label">Land Cost ($)</label>
-                  <input
-                    className="form-input form-input-sm"
-                    type="number"
-                    value={financials.landCost}
-                    onChange={e => updateFinancial('landCost', Number(e.target.value) || 0)}
-                  />
+                  <input className="form-input form-input-sm" type="number" value={financials.landCost}
+                    onChange={e => updateFinancial('landCost', Number(e.target.value) || 0)} />
                 </div>
                 <div className="form-group" style={{ marginBottom: 8 }}>
                   <label className="form-label">Infrastructure Cost / LF Road ($)</label>
-                  <input
-                    className="form-input form-input-sm"
-                    type="number"
-                    value={financials.infraCostPerLF}
-                    onChange={e => updateFinancial('infraCostPerLF', Number(e.target.value) || 0)}
-                  />
+                  <input className="form-input form-input-sm" type="number" value={financials.infraCostPerLF}
+                    onChange={e => updateFinancial('infraCostPerLF', Number(e.target.value) || 0)} />
                 </div>
                 <div className="form-group" style={{ marginBottom: 8 }}>
                   <label className="form-label">Lot Dev Cost / Lot ($)</label>
-                  <input
-                    className="form-input form-input-sm"
-                    type="number"
-                    value={financials.lotDevCostPerLot}
-                    onChange={e => updateFinancial('lotDevCostPerLot', Number(e.target.value) || 0)}
-                  />
+                  <input className="form-input form-input-sm" type="number" value={financials.lotDevCostPerLot}
+                    onChange={e => updateFinancial('lotDevCostPerLot', Number(e.target.value) || 0)} />
                 </div>
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Soft Cost %</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      value={financials.softCostPct}
-                      onChange={e => updateFinancial('softCostPct', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" value={financials.softCostPct}
+                      onChange={e => updateFinancial('softCostPct', Number(e.target.value) || 0)} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Cap Rate %</label>
-                    <input
-                      className="form-input form-input-sm"
-                      type="number"
-                      step="0.25"
-                      value={financials.capRate}
-                      onChange={e => updateFinancial('capRate', Number(e.target.value) || 0)}
-                    />
+                    <input className="form-input form-input-sm" type="number" step="0.25" value={financials.capRate}
+                      onChange={e => updateFinancial('capRate', Number(e.target.value) || 0)} />
                   </div>
                 </div>
               </div>
@@ -848,18 +839,39 @@ export default function App() {
               </button>
             </div>
           </div>
+          
+          {/* Token settings */}
+          {!showTokenInput && (
+            <div className="panel-section" style={{ borderBottom: 'none' }}>
+              <button className="btn btn-ghost btn-sm btn-full" onClick={() => setShowTokenInput(true)}
+                style={{ fontSize: 10, color: 'var(--color-text-faint)' }}>
+                Change Mapbox Token
+              </button>
+            </div>
+          )}
         </aside>
         
         {/* Right Content */}
         <div className="right-content">
-          {/* Map */}
           <div className="map-container">
             <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
-            {!mapLoaded && (
+            {!mapLoaded && !tokenInput && (
+              <div className="map-loading">
+                <div style={{ textAlign: 'center' }}>
+                  <p style={{ marginBottom: 8 }}>Enter your Mapbox token to load the map</p>
+                  <p style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>
+                    Free at <a href="https://account.mapbox.com" target="_blank" rel="noopener noreferrer" 
+                      style={{ color: 'var(--color-primary)' }}>account.mapbox.com</a>
+                  </p>
+                </div>
+              </div>
+            )}
+            {!mapLoaded && tokenInput && (
               <div className="map-loading">Loading map...</div>
             )}
             <div className="dimension-overlay">
-              <strong>{widthFt}ft × {depthFt}ft</strong> <span>({(widthFt * depthFt / 43560).toFixed(2)} acres)</span>
+              <strong>{widthFt}ft × {depthFt}ft</strong>{' '}
+              <span>({(widthFt * depthFt / 43560).toFixed(2)} acres)</span>
             </div>
             <div className="map-info">
               {results.conformingLots} lots · {results.numRoads} road{results.numRoads !== 1 ? 's' : ''} · {(widthFt * depthFt).toLocaleString()} sq ft
@@ -877,88 +889,35 @@ export default function App() {
             <div className="stats-grid">
               <div className="stats-section">
                 <div className="stats-section-title">Subdivisions</div>
-                <div className="stat-row">
-                  <span className="stat-label">Parcels</span>
-                  <span className="stat-value">{results.conformingLots}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Units</span>
-                  <span className="stat-value">{results.conformingLots}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">NRSF</span>
-                  <span className="stat-value">{formatNumber(results.totalNRSF)}</span>
-                </div>
+                <div className="stat-row"><span className="stat-label">Parcels</span><span className="stat-value">{results.conformingLots}</span></div>
+                <div className="stat-row"><span className="stat-label">Units</span><span className="stat-value">{results.conformingLots}</span></div>
+                <div className="stat-row"><span className="stat-label">NRSF</span><span className="stat-value">{formatNumber(results.totalNRSF)}</span></div>
               </div>
-              
               <div className="stats-section">
                 <div className="stats-section-title">Housing Drive Aisle</div>
-                <div className="stat-row">
-                  <span className="stat-label">Area Road</span>
-                  <span className="stat-value">{formatNumber(results.roadAreaFt2)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Linear Road</span>
-                  <span className="stat-value">{formatNumber(results.roadLinearFt)}</span>
-                </div>
+                <div className="stat-row"><span className="stat-label">Area Road</span><span className="stat-value">{formatNumber(results.roadAreaFt2)}</span></div>
+                <div className="stat-row"><span className="stat-label">Linear Road</span><span className="stat-value">{formatNumber(results.roadLinearFt)}</span></div>
               </div>
-              
               <div className="stats-section">
                 <div className="stats-section-title">Summary</div>
-                <div className="stat-row">
-                  <span className="stat-label">Revenue</span>
-                  <span className="stat-value success">{formatCurrency(results.revenue)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Expenses</span>
-                  <span className="stat-value error">{formatCurrency(results.expenses)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">NOI</span>
-                  <span className="stat-value highlight">{formatCurrency(results.noi)}</span>
-                </div>
+                <div className="stat-row"><span className="stat-label">Revenue</span><span className="stat-value success">{formatCurrency(results.revenue)}</span></div>
+                <div className="stat-row"><span className="stat-label">Expenses</span><span className="stat-value error">{formatCurrency(results.expenses)}</span></div>
+                <div className="stat-row"><span className="stat-label">NOI</span><span className="stat-value highlight">{formatCurrency(results.noi)}</span></div>
               </div>
-              
               <div className="stats-section">
                 <div className="stats-section-title">Costs</div>
-                <div className="stat-row">
-                  <span className="stat-label">Land</span>
-                  <span className="stat-value">{formatCurrency(results.landCosts)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Hard</span>
-                  <span className="stat-value">{formatCurrency(results.hardCosts)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Soft</span>
-                  <span className="stat-value">{formatCurrency(results.softCosts)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Earthwork</span>
-                  <span className="stat-value" style={{ color: 'var(--color-text-faint)' }}>$0</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Total</span>
-                  <span className="stat-value">{formatCurrency(results.totalCosts)}</span>
-                </div>
+                <div className="stat-row"><span className="stat-label">Land</span><span className="stat-value">{formatCurrency(results.landCosts)}</span></div>
+                <div className="stat-row"><span className="stat-label">Hard</span><span className="stat-value">{formatCurrency(results.hardCosts)}</span></div>
+                <div className="stat-row"><span className="stat-label">Soft</span><span className="stat-value">{formatCurrency(results.softCosts)}</span></div>
+                <div className="stat-row"><span className="stat-label">Earthwork</span><span className="stat-value" style={{ color: 'var(--color-text-faint)' }}>$0</span></div>
+                <div className="stat-row"><span className="stat-label">Total</span><span className="stat-value">{formatCurrency(results.totalCosts)}</span></div>
               </div>
-              
               <div className="stats-section">
                 <div className="stats-section-title">Metrics</div>
-                <div className="stat-row">
-                  <span className="stat-label">Yield on Cost</span>
-                  <span className={`stat-value ${results.yieldOnCost > 0 ? 'success' : 'error'}`}>
-                    {formatPercent(results.yieldOnCost)}
-                  </span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Cap Rate</span>
-                  <span className="stat-value">{formatPercent(results.capRate)}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Value</span>
-                  <span className="stat-value accent">{formatFullCurrency(results.value)}</span>
-                </div>
+                <div className="stat-row"><span className="stat-label">Yield on Cost</span>
+                  <span className={`stat-value ${results.yieldOnCost > 0 ? 'success' : 'error'}`}>{formatPercent(results.yieldOnCost)}</span></div>
+                <div className="stat-row"><span className="stat-label">Cap Rate</span><span className="stat-value">{formatPercent(results.capRate)}</span></div>
+                <div className="stat-row"><span className="stat-label">Value</span><span className="stat-value accent">{formatFullCurrency(results.value)}</span></div>
               </div>
             </div>
           </div>
@@ -983,6 +942,8 @@ function downloadFile(content, filename, mimeType) {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
