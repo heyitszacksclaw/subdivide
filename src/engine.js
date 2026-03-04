@@ -138,70 +138,99 @@ export function computeSubdivision(site) {
   const minLotDepth = Math.min(...parcelTypes.map(t => t.lotDepthFt));
   const maxLotDepth = Math.max(...parcelTypes.map(t => t.lotDepthFt));
   
-  // Determine number of roads
-  // "If the site is wide enough (>250 ft after road subtraction), a second parallel road is added"
-  // Per algorithm: numRoads = 1 if (depthFt < maxLotDepth×2 + roadWidthFt + 40) else 2
-  const needsTwoRoads = depthFt >= (maxLotDepth * 2 + roadWidthFt * 2 + 40);
-  const numRoads = needsTwoRoads ? 2 : 1;
+  // Smart road count: pick the layout that yields the most conforming lots.
+  // Two roads only make sense if the depth is enough for 3 rows of lots + 2 roads.
+  // Required for 2 roads: minLotDepth * 3 + roadWidthFt * 2 (absolute minimum)
+  // We try both layouts and pick the one with more conforming lots.
   
-  let allLots = [];
-  let lotNum = 1;
+  function computeLayout(nRoads) {
+    let lots = [];
+    let lotN = 1;
+    const roads = [];
+    
+    if (nRoads === 1) {
+      const roadCenterY = depthFt / 2;
+      const roadBottomY = roadCenterY - roadWidthFt / 2;
+      const roadTopY = roadCenterY + roadWidthFt / 2;
+      roads.push({ x: 0, y: roadBottomY, width: widthFt, height: roadWidthFt });
+      
+      // Bottom row: lots from y=0 to roadBottomY, front faces road (top)
+      const bottomRowDepth = roadBottomY;
+      if (bottomRowDepth >= minLotDepth) {
+        const bottomLots = packRow(0, widthFt, 0, bottomRowDepth, parcelTypes, typeSequence, lotN, 0, false);
+        lots.push(...bottomLots);
+        lotN += bottomLots.length;
+      }
+      
+      // Top row: lots from roadTopY to depthFt, front faces road (bottom)
+      const topRowDepth = depthFt - roadTopY;
+      if (topRowDepth >= minLotDepth) {
+        const topLots = packRow(0, widthFt, roadTopY, topRowDepth, parcelTypes, typeSequence, lotN, 1, true);
+        lots.push(...topLots);
+        lotN += topLots.length;
+      }
+    } else {
+      // Two roads — position them to maximize row depths
+      // Optimal: each row gets (depthFt - numRoads * roadWidthFt) / 3
+      const totalRoadSpace = nRoads * roadWidthFt;
+      const availableForLots = depthFt - totalRoadSpace;
+      const rowDepth = availableForLots / 3;
+      
+      // Road 1 sits after first row, Road 2 sits after second row
+      const road1BottomY = rowDepth;
+      const road1TopY = road1BottomY + roadWidthFt;
+      const road2BottomY = road1TopY + rowDepth;
+      const road2TopY = road2BottomY + roadWidthFt;
+      
+      roads.push({ x: 0, y: road1BottomY, width: widthFt, height: roadWidthFt });
+      roads.push({ x: 0, y: road2BottomY, width: widthFt, height: roadWidthFt });
+      
+      // Row 0: bottom edge to road1 bottom
+      if (road1BottomY >= minLotDepth) {
+        const rowLots = packRow(0, widthFt, 0, road1BottomY, parcelTypes, typeSequence, lotN, 0, false);
+        lots.push(...rowLots);
+        lotN += rowLots.length;
+      }
+      
+      // Row 1: road1 top to road2 bottom
+      const middleDepth = road2BottomY - road1TopY;
+      if (middleDepth >= minLotDepth) {
+        const rowLots = packRow(0, widthFt, road1TopY, middleDepth, parcelTypes, typeSequence, lotN, 1, true);
+        lots.push(...rowLots);
+        lotN += rowLots.length;
+      }
+      
+      // Row 2: road2 top to top edge
+      const topDepth = depthFt - road2TopY;
+      if (topDepth >= minLotDepth) {
+        const rowLots = packRow(0, widthFt, road2TopY, topDepth, parcelTypes, typeSequence, lotN, 2, true);
+        lots.push(...rowLots);
+        lotN += rowLots.length;
+      }
+    }
+    
+    return { lots, roads, numRoads: nRoads };
+  }
   
-  if (numRoads === 1) {
-    // Single road centered
-    const roadCenterY = depthFt / 2;
-    const roadBottomY = roadCenterY - roadWidthFt / 2;
-    const roadTopY = roadCenterY + roadWidthFt / 2;
-    
-    // Bottom row: lots from y=0 to roadBottomY, front faces road (top)
-    const bottomRowDepth = roadBottomY;
-    if (bottomRowDepth >= minLotDepth) {
-      const bottomLots = packRow(0, widthFt, 0, bottomRowDepth, parcelTypes, typeSequence, lotNum, 0, false);
-      allLots.push(...bottomLots);
-      lotNum += bottomLots.length;
-    }
-    
-    // Top row: lots from roadTopY to depthFt, front faces road (bottom)
-    const topRowDepth = depthFt - roadTopY;
-    if (topRowDepth >= minLotDepth) {
-      const topLots = packRow(0, widthFt, roadTopY, topRowDepth, parcelTypes, typeSequence, lotNum, 1, true);
-      allLots.push(...topLots);
-      lotNum += topLots.length;
-    }
-  } else {
-    // Two roads
-    const roadSpacing = depthFt / 3;
-    const road1CenterY = roadSpacing;
-    const road2CenterY = roadSpacing * 2;
-    
-    const road1BottomY = road1CenterY - roadWidthFt / 2;
-    const road1TopY = road1CenterY + roadWidthFt / 2;
-    const road2BottomY = road2CenterY - roadWidthFt / 2;
-    const road2TopY = road2CenterY + roadWidthFt / 2;
-    
-    // Row 0: bottom edge to road1 bottom
-    if (road1BottomY >= minLotDepth) {
-      const lots = packRow(0, widthFt, 0, road1BottomY, parcelTypes, typeSequence, lotNum, 0, false);
-      allLots.push(...lots);
-      lotNum += lots.length;
-    }
-    
-    // Row 1: road1 top to road2 bottom
-    const middleDepth = road2BottomY - road1TopY;
-    if (middleDepth >= minLotDepth) {
-      const lots = packRow(0, widthFt, road1TopY, middleDepth, parcelTypes, typeSequence, lotNum, 1, true);
-      allLots.push(...lots);
-      lotNum += lots.length;
-    }
-    
-    // Row 2: road2 top to top edge
-    const topDepth = depthFt - road2TopY;
-    if (topDepth >= minLotDepth) {
-      const lots = packRow(0, widthFt, road2TopY, topDepth, parcelTypes, typeSequence, lotNum, 2, true);
-      allLots.push(...lots);
-      lotNum += lots.length;
+  // Always try single road layout
+  const layout1 = computeLayout(1);
+  
+  // Try two-road layout if there's theoretically enough space
+  const minFor2Roads = minLotDepth * 3 + roadWidthFt * 2;
+  let bestLayout = layout1;
+  
+  if (depthFt >= minFor2Roads) {
+    const layout2 = computeLayout(2);
+    const conforming1 = layout1.lots.filter(l => l.conforming).length;
+    const conforming2 = layout2.lots.filter(l => l.conforming).length;
+    // Pick layout with more conforming lots; prefer 2 roads if tied (more road = better access)
+    if (conforming2 >= conforming1 && conforming2 > 0) {
+      bestLayout = layout2;
     }
   }
+  
+  const allLots = bestLayout.lots;
+  const numRoads = bestLayout.numRoads;
   
   // Compute statistics
   const conformingLots = allLots.filter(l => l.conforming);
@@ -229,31 +258,7 @@ export function computeSubdivision(site) {
   const capRate = financials?.capRate || 5;
   const value = capRate > 0 ? noi / (capRate / 100) : 0;
   
-  // Road geometries (for rendering)
-  const roads = [];
-  if (numRoads === 1) {
-    const roadCenterY = depthFt / 2;
-    roads.push({
-      x: 0,
-      y: roadCenterY - roadWidthFt / 2,
-      width: widthFt,
-      height: roadWidthFt
-    });
-  } else {
-    const roadSpacing = depthFt / 3;
-    roads.push({
-      x: 0,
-      y: roadSpacing - roadWidthFt / 2,
-      width: widthFt,
-      height: roadWidthFt
-    });
-    roads.push({
-      x: 0,
-      y: roadSpacing * 2 - roadWidthFt / 2,
-      width: widthFt,
-      height: roadWidthFt
-    });
-  }
+  const roads = bestLayout.roads;
   
   return {
     lots: allLots,
