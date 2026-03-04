@@ -167,85 +167,41 @@ function addOverlayLayers(map, overlayData) {
   const { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON } = overlayData;
 
   // Add sources
-  map.addSource('site-boundary', { type: 'geojson', data: boundaryGeoJSON });
-  map.addSource('roads', { type: 'geojson', data: roadsGeoJSON });
-  map.addSource('lots', { type: 'geojson', data: lotsGeoJSON });
-  map.addSource('homes', { type: 'geojson', data: homesGeoJSON });
-  map.addSource('lot-labels', { type: 'geojson', data: labelsGeoJSON });
+  try { map.addSource('site-boundary', { type: 'geojson', data: boundaryGeoJSON }); } catch(e) { console.warn('src site-boundary:', e); }
+  try { map.addSource('roads', { type: 'geojson', data: roadsGeoJSON }); } catch(e) { console.warn('src roads:', e); }
+  try { map.addSource('lots', { type: 'geojson', data: lotsGeoJSON }); } catch(e) { console.warn('src lots:', e); }
+  try { map.addSource('homes', { type: 'geojson', data: homesGeoJSON }); } catch(e) { console.warn('src homes:', e); }
+  try { map.addSource('lot-labels', { type: 'geojson', data: labelsGeoJSON }); } catch(e) { console.warn('src labels:', e); }
 
-  // Site boundary
-  map.addLayer({
-    id: 'site-boundary-fill',
-    type: 'fill',
-    source: 'site-boundary',
-    paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.1 }
-  });
-  map.addLayer({
-    id: 'site-boundary-line',
-    type: 'line',
-    source: 'site-boundary',
-    paint: { 'line-color': '#ffffff', 'line-width': 2.5, 'line-dasharray': [4, 2] }
-  });
+  const layers = [
+    { id: 'site-boundary-fill', type: 'fill', source: 'site-boundary',
+      paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.1 } },
+    { id: 'site-boundary-line', type: 'line', source: 'site-boundary',
+      paint: { 'line-color': '#ffffff', 'line-width': 2.5, 'line-dasharray': [4, 2] } },
+    { id: 'roads-fill', type: 'fill', source: 'roads',
+      paint: { 'fill-color': '#475569', 'fill-opacity': 0.8 } },
+    { id: 'roads-line', type: 'line', source: 'roads',
+      paint: { 'line-color': '#94a3b8', 'line-width': 1.5 } },
+    { id: 'lots-fill', type: 'fill', source: 'lots',
+      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.45 } },
+    { id: 'lots-line', type: 'line', source: 'lots',
+      paint: { 'line-color': ['get', 'color'], 'line-width': 2 } },
+    { id: 'homes-fill', type: 'fill', source: 'homes',
+      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.8 } },
+    { id: 'homes-line', type: 'line', source: 'homes',
+      paint: { 'line-color': '#ffffff', 'line-width': 0.5, 'line-opacity': 0.5 } },
+    { id: 'lot-labels-text', type: 'symbol', source: 'lot-labels',
+      layout: { 'text-field': ['get', 'label'], 'text-size': 12,
+        'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
+      paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,0.9)', 'text-halo-width': 1.5 } },
+  ];
 
-  // Roads
-  map.addLayer({
-    id: 'roads-fill',
-    type: 'fill',
-    source: 'roads',
-    paint: { 'fill-color': '#475569', 'fill-opacity': 0.75 }
-  });
-  map.addLayer({
-    id: 'roads-line',
-    type: 'line',
-    source: 'roads',
-    paint: { 'line-color': '#94a3b8', 'line-width': 1 }
-  });
-
-  // Lots
-  map.addLayer({
-    id: 'lots-fill',
-    type: 'fill',
-    source: 'lots',
-    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.45 }
-  });
-  map.addLayer({
-    id: 'lots-line',
-    type: 'line',
-    source: 'lots',
-    paint: { 'line-color': ['get', 'color'], 'line-width': 2 }
+  layers.forEach(layer => {
+    try { map.addLayer(layer); } catch(e) { console.warn('layer', layer.id, ':', e.message); }
   });
 
-  // Home footprints
-  map.addLayer({
-    id: 'homes-fill',
-    type: 'fill',
-    source: 'homes',
-    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.8 }
-  });
-  map.addLayer({
-    id: 'homes-line',
-    type: 'line',
-    source: 'homes',
-    paint: { 'line-color': '#ffffff', 'line-width': 0.5, 'line-opacity': 0.5 }
-  });
-
-  // Lot labels
-  map.addLayer({
-    id: 'lot-labels-text',
-    type: 'symbol',
-    source: 'lot-labels',
-    layout: {
-      'text-field': ['get', 'label'],
-      'text-size': 11,
-      'text-font': ['Open Sans Bold'],
-      'text-allow-overlap': true
-    },
-    paint: {
-      'text-color': '#ffffff',
-      'text-halo-color': 'rgba(0,0,0,0.85)',
-      'text-halo-width': 1.5
-    }
-  });
+  console.log('Overlay layers added. Sources:', Object.keys(map.getStyle().sources));
+  console.log('Layers:', map.getStyle().layers.map(l => l.id));
 }
 
 function updateOverlaySources(map, overlayData) {
