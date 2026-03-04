@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import mapboxgl from 'mapbox-gl';
+import maplibregl from 'maplibre-gl';
 import { computeSubdivision } from './engine';
 import { 
   siteRectToGeoJSON, 
@@ -10,17 +10,61 @@ import {
 } from './coordinates';
 import { generateCSV, generateDXF, formatCurrency, formatNumber, formatPercent, formatFullCurrency } from './exports';
 
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || '';
-
 const DEFAULT_LAT = 33.4484;
 const DEFAULT_LON = -112.0740;
 const DEFAULT_COLORS = ['#3b82f6', '#22c55e', '#f97316'];
 
+// Free map styles — no API key needed
 const MAP_STYLES = {
-  satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
-  dark: 'mapbox://styles/mapbox/dark-v11',
-  streets: 'mapbox://styles/mapbox/streets-v12',
-  light: 'mapbox://styles/mapbox/light-v11',
+  satellite: {
+    version: 8,
+    sources: {
+      'esri-satellite': {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+        ],
+        tileSize: 256,
+        attribution: '&copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
+      }
+    },
+    layers: [{
+      id: 'esri-satellite',
+      type: 'raster',
+      source: 'esri-satellite'
+    }],
+    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf'
+  },
+  liberty: 'https://tiles.openfreemap.org/styles/liberty',
+  dark: {
+    version: 8,
+    sources: {
+      'carto-dark': {
+        type: 'raster',
+        tiles: [
+          'https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}@2x.png',
+          'https://cartodb-basemaps-b.global.ssl.fastly.net/dark_all/{z}/{x}/{y}@2x.png',
+          'https://cartodb-basemaps-c.global.ssl.fastly.net/dark_all/{z}/{x}/{y}@2x.png'
+        ],
+        tileSize: 256,
+        attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+      }
+    },
+    layers: [{
+      id: 'carto-dark',
+      type: 'raster',
+      source: 'carto-dark'
+    }],
+    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf'
+  },
+  bright: 'https://tiles.openfreemap.org/styles/bright',
+};
+
+const STYLE_LABELS = {
+  satellite: 'Satellite',
+  dark: 'Dark',
+  liberty: 'Liberty',
+  bright: 'Bright',
 };
 
 function createDefaultParcelType(index) {
@@ -50,7 +94,6 @@ const defaultFinancials = {
 };
 
 function addMapLayers(map) {
-  // Add empty sources for our overlays
   if (!map.getSource('site-boundary')) {
     map.addSource('site-boundary', {
       type: 'geojson',
@@ -162,7 +205,7 @@ function addMapLayers(map) {
       layout: {
         'text-field': ['get', 'label'],
         'text-size': 11,
-        'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+        'text-font': ['Open Sans Bold'],
         'text-allow-overlap': true
       },
       paint: {
@@ -195,8 +238,6 @@ export default function App() {
   const [financialsCollapsed, setFinancialsCollapsed] = useState(false);
   const [mapLoaded, setMapLoaded] = useState(false);
   const [mapStyle, setMapStyle] = useState('dark');
-  const [tokenInput, setTokenInput] = useState(MAPBOX_TOKEN);
-  const [showTokenInput, setShowTokenInput] = useState(!MAPBOX_TOKEN);
   
   // Map refs
   const mapContainerRef = useRef(null);
@@ -226,8 +267,6 @@ export default function App() {
 
   // Initialize map
   useEffect(() => {
-    if (!tokenInput) return;
-    
     // Clean up existing map
     if (mapRef.current) {
       mapRef.current.remove();
@@ -235,17 +274,17 @@ export default function App() {
       setMapLoaded(false);
     }
     
-    mapboxgl.accessToken = tokenInput;
+    const styleValue = MAP_STYLES[mapStyle] || MAP_STYLES.dark;
     
-    const map = new mapboxgl.Map({
+    const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: MAP_STYLES[mapStyle] || MAP_STYLES.dark,
+      style: styleValue,
       center: [lon, lat],
       zoom: 17,
       attributionControl: true
     });
     
-    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
     
     map.on('load', () => {
       addMapLayers(map);
@@ -254,10 +293,6 @@ export default function App() {
     
     map.on('error', (e) => {
       console.warn('Map error:', e.error?.message || e.message);
-      // If satellite fails, fall back to dark
-      if (mapStyle === 'satellite' && e.error?.status === 403) {
-        setMapStyle('dark');
-      }
     });
     
     mapRef.current = map;
@@ -266,7 +301,7 @@ export default function App() {
       map.remove();
       mapRef.current = null;
     };
-  }, [tokenInput, mapStyle]);
+  }, [mapStyle]);
   
   // Update map overlays when results change
   useEffect(() => {
@@ -368,12 +403,15 @@ export default function App() {
       return;
     }
     
-    if (!tokenInput) return;
-    fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(input)}.json?access_token=${tokenInput}&limit=1`)
+    // Use Nominatim for geocoding (free, no API key)
+    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(input)}&limit=1`, {
+      headers: { 'User-Agent': 'Subdivide/1.0' }
+    })
       .then(r => r.json())
       .then(data => {
-        if (data.features && data.features.length > 0) {
-          const [newLon, newLat] = data.features[0].center;
+        if (data && data.length > 0) {
+          const newLat = parseFloat(data[0].lat);
+          const newLon = parseFloat(data[0].lon);
           setLat(newLat);
           setLon(newLon);
           setAddressInput(`${newLat.toFixed(4)}, ${newLon.toFixed(4)}`);
@@ -383,7 +421,7 @@ export default function App() {
         }
       })
       .catch(err => console.error('Geocoding error:', err));
-  }, [addressInput, tokenInput]);
+  }, [addressInput]);
   
   // Parcel type handlers
   const updateParcelType = useCallback((index, field, value) => {
@@ -553,14 +591,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, [results, lat, lon, widthFt, depthFt]);
   
-  const handleTokenSubmit = useCallback(() => {
-    if (tokenInput.startsWith('pk.')) {
-      setShowTokenInput(false);
-      // Try satellite first with user token
-      setMapStyle('satellite');
-    }
-  }, [tokenInput]);
-  
   const activeType = parcelTypes[activeParcelTab] || parcelTypes[0];
   
   return (
@@ -579,12 +609,12 @@ export default function App() {
         <span className="tagline">Single-Family Subdivision Feasibility</span>
         <div className="header-right">
           {/* Map style toggle */}
-          <div className="street-toggle" style={{ width: 'auto', minWidth: 180 }}>
+          <div className="street-toggle" style={{ width: 'auto', minWidth: 200 }}>
             {Object.keys(MAP_STYLES).map(s => (
               <button key={s} className={`street-toggle-btn ${mapStyle === s ? 'active' : ''}`}
                 onClick={() => setMapStyle(s)}
                 style={{ textTransform: 'capitalize', fontSize: 10 }}
-              >{s}</button>
+              >{STYLE_LABELS[s]}</button>
             ))}
           </div>
           <span style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>v1.0</span>
@@ -595,30 +625,6 @@ export default function App() {
       <div className="app-body">
         {/* Left Panel */}
         <aside className="left-panel">
-          {/* Mapbox Token */}
-          {showTokenInput && (
-            <div className="panel-section" style={{ background: 'var(--color-surface-2)' }}>
-              <div className="panel-section-header" style={{ cursor: 'default' }}>
-                <span className="panel-section-title">Mapbox API Token</span>
-              </div>
-              <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
-                Enter your Mapbox public token (pk...) to load the map. 
-                Get one free at <a href="https://account.mapbox.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)' }}>account.mapbox.com</a>
-              </p>
-              <div className="address-row">
-                <input
-                  className="form-input"
-                  value={tokenInput}
-                  onChange={e => setTokenInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleTokenSubmit()}
-                  placeholder="pk.eyJ1..."
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}
-                />
-                <button className="btn btn-primary" onClick={handleTokenSubmit} disabled={!tokenInput.startsWith('pk.')}>Load</button>
-              </div>
-            </div>
-          )}
-          
           {/* Location */}
           <div className="panel-section">
             <div className="panel-section-header" style={{ cursor: 'default' }}>
@@ -839,34 +845,13 @@ export default function App() {
               </button>
             </div>
           </div>
-          
-          {/* Token settings */}
-          {!showTokenInput && (
-            <div className="panel-section" style={{ borderBottom: 'none' }}>
-              <button className="btn btn-ghost btn-sm btn-full" onClick={() => setShowTokenInput(true)}
-                style={{ fontSize: 10, color: 'var(--color-text-faint)' }}>
-                Change Mapbox Token
-              </button>
-            </div>
-          )}
         </aside>
         
         {/* Right Content */}
         <div className="right-content">
           <div className="map-container">
             <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
-            {!mapLoaded && !tokenInput && (
-              <div className="map-loading">
-                <div style={{ textAlign: 'center' }}>
-                  <p style={{ marginBottom: 8 }}>Enter your Mapbox token to load the map</p>
-                  <p style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>
-                    Free at <a href="https://account.mapbox.com" target="_blank" rel="noopener noreferrer" 
-                      style={{ color: 'var(--color-primary)' }}>account.mapbox.com</a>
-                  </p>
-                </div>
-              </div>
-            )}
-            {!mapLoaded && tokenInput && (
+            {!mapLoaded && (
               <div className="map-loading">Loading map...</div>
             )}
             <div className="dimension-overlay">
