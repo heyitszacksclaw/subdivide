@@ -25,7 +25,7 @@ const MAP_STYLES = {
           'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
         ],
         tileSize: 256,
-        attribution: '&copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics'
+        attribution: '&copy; Esri &mdash; Esri, Maxar, Earthstar Geographics'
       }
     },
     layers: [{
@@ -47,7 +47,7 @@ const MAP_STYLES = {
           'https://cartodb-basemaps-c.global.ssl.fastly.net/dark_all/{z}/{x}/{y}@2x.png'
         ],
         tileSize: 256,
-        attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        attribution: '&copy; CARTO &copy; OpenStreetMap'
       }
     },
     layers: [{
@@ -93,129 +93,207 @@ const defaultFinancials = {
   capRate: 5,
 };
 
-function addMapLayers(map) {
-  if (!map.getSource('site-boundary')) {
-    map.addSource('site-boundary', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] }
-    });
-  }
-  if (!map.getSource('roads')) {
-    map.addSource('roads', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] }
-    });
-  }
-  if (!map.getSource('lots')) {
-    map.addSource('lots', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] }
-    });
-  }
-  if (!map.getSource('homes')) {
-    map.addSource('homes', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] }
-    });
-  }
-  if (!map.getSource('lot-labels')) {
-    map.addSource('lot-labels', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] }
-    });
-  }
+// Build all the GeoJSON data for map overlays
+function buildOverlayData(results, originLat, originLon, widthFt, depthFt) {
+  const siteBoundary = siteRectToGeoJSON(originLat, originLon, widthFt, depthFt);
   
-  // Site boundary
-  if (!map.getLayer('site-boundary-fill')) {
-    map.addLayer({
-      id: 'site-boundary-fill',
-      type: 'fill',
-      source: 'site-boundary',
-      paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.08 }
-    });
-    map.addLayer({
-      id: 'site-boundary-line',
-      type: 'line',
-      source: 'site-boundary',
-      paint: { 'line-color': '#ffffff', 'line-width': 2.5, 'line-dasharray': [4, 2] }
-    });
-  }
+  const boundaryGeoJSON = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [siteBoundary] },
+      properties: {}
+    }]
+  };
   
-  // Roads
-  if (!map.getLayer('roads-fill')) {
-    map.addLayer({
-      id: 'roads-fill',
-      type: 'fill',
-      source: 'roads',
-      paint: { 'fill-color': '#475569', 'fill-opacity': 0.75 }
-    });
-    map.addLayer({
-      id: 'roads-line',
-      type: 'line',
-      source: 'roads',
-      paint: { 'line-color': '#94a3b8', 'line-width': 1 }
-    });
-  }
-  
-  // Lots
-  if (!map.getLayer('lots-fill')) {
-    map.addLayer({
-      id: 'lots-fill',
-      type: 'fill',
-      source: 'lots',
-      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3 }
-    });
-    map.addLayer({
-      id: 'lots-line',
-      type: 'line',
-      source: 'lots',
-      paint: { 'line-color': ['get', 'color'], 'line-width': 1.5 }
-    });
-    map.addLayer({
-      id: 'lots-nonconforming',
-      type: 'fill',
-      source: 'lots',
-      filter: ['==', ['get', 'conforming'], false],
-      paint: { 'fill-color': '#ef4444', 'fill-opacity': 0.4 }
-    });
-  }
-  
-  // Home footprints
-  if (!map.getLayer('homes-fill')) {
-    map.addLayer({
-      id: 'homes-fill',
-      type: 'fill',
-      source: 'homes',
-      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.65 }
-    });
-    map.addLayer({
-      id: 'homes-line',
-      type: 'line',
-      source: 'homes',
-      paint: { 'line-color': '#ffffff', 'line-width': 0.5, 'line-opacity': 0.4 }
-    });
-  }
-  
-  // Lot labels
-  if (!map.getLayer('lot-labels-text')) {
-    map.addLayer({
-      id: 'lot-labels-text',
-      type: 'symbol',
-      source: 'lot-labels',
-      layout: {
-        'text-field': ['get', 'label'],
-        'text-size': 11,
-        'text-font': ['Open Sans Bold'],
-        'text-allow-overlap': true
+  const roadsGeoJSON = {
+    type: 'FeatureCollection',
+    features: results.roads.map(road => ({
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [rectToGeoJSON(originLat, originLon, road.x, road.y, road.width, road.height)]
       },
-      paint: {
-        'text-color': '#ffffff',
-        'text-halo-color': 'rgba(0,0,0,0.8)',
-        'text-halo-width': 1.2
+      properties: {}
+    }))
+  };
+  
+  const lotsGeoJSON = {
+    type: 'FeatureCollection',
+    features: results.lots.map(lot => ({
+      type: 'Feature',
+      properties: {
+        color: lot.conforming ? lot.color : '#ef4444',
+        conforming: lot.conforming,
+        id: lot.id
+      },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [boundaryToGeoJSON(originLat, originLon, lot.lotBoundary)]
       }
-    });
-  }
+    }))
+  };
+  
+  const homesGeoJSON = {
+    type: 'FeatureCollection',
+    features: results.lots
+      .filter(lot => lot.conforming)
+      .map(lot => ({
+        type: 'Feature',
+        properties: { color: lot.color },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [boundaryToGeoJSON(originLat, originLon, lot.homeBoundary)]
+        }
+      }))
+  };
+  
+  const labelsGeoJSON = {
+    type: 'FeatureCollection',
+    features: results.lots.map(lot => {
+      const center = getBoundaryCenterLatLon(originLat, originLon, lot.lotBoundary);
+      return {
+        type: 'Feature',
+        properties: { label: String(lot.id) },
+        geometry: { type: 'Point', coordinates: center }
+      };
+    })
+  };
+  
+  return { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON };
 }
+
+function addOverlayLayers(map, overlayData) {
+  const { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON } = overlayData;
+
+  // Add sources
+  map.addSource('site-boundary', { type: 'geojson', data: boundaryGeoJSON });
+  map.addSource('roads', { type: 'geojson', data: roadsGeoJSON });
+  map.addSource('lots', { type: 'geojson', data: lotsGeoJSON });
+  map.addSource('homes', { type: 'geojson', data: homesGeoJSON });
+  map.addSource('lot-labels', { type: 'geojson', data: labelsGeoJSON });
+
+  // Site boundary
+  map.addLayer({
+    id: 'site-boundary-fill',
+    type: 'fill',
+    source: 'site-boundary',
+    paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.06 }
+  });
+  map.addLayer({
+    id: 'site-boundary-line',
+    type: 'line',
+    source: 'site-boundary',
+    paint: { 'line-color': '#ffffff', 'line-width': 2.5, 'line-dasharray': [4, 2] }
+  });
+
+  // Roads
+  map.addLayer({
+    id: 'roads-fill',
+    type: 'fill',
+    source: 'roads',
+    paint: { 'fill-color': '#475569', 'fill-opacity': 0.75 }
+  });
+  map.addLayer({
+    id: 'roads-line',
+    type: 'line',
+    source: 'roads',
+    paint: { 'line-color': '#94a3b8', 'line-width': 1 }
+  });
+
+  // Lots
+  map.addLayer({
+    id: 'lots-fill',
+    type: 'fill',
+    source: 'lots',
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.35 }
+  });
+  map.addLayer({
+    id: 'lots-line',
+    type: 'line',
+    source: 'lots',
+    paint: { 'line-color': ['get', 'color'], 'line-width': 1.5 }
+  });
+
+  // Home footprints
+  map.addLayer({
+    id: 'homes-fill',
+    type: 'fill',
+    source: 'homes',
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.7 }
+  });
+  map.addLayer({
+    id: 'homes-line',
+    type: 'line',
+    source: 'homes',
+    paint: { 'line-color': '#ffffff', 'line-width': 0.5, 'line-opacity': 0.5 }
+  });
+
+  // Lot labels
+  map.addLayer({
+    id: 'lot-labels-text',
+    type: 'symbol',
+    source: 'lot-labels',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 11,
+      'text-font': ['Open Sans Bold'],
+      'text-allow-overlap': true
+    },
+    paint: {
+      'text-color': '#ffffff',
+      'text-halo-color': 'rgba(0,0,0,0.85)',
+      'text-halo-width': 1.5
+    }
+  });
+}
+
+function updateOverlaySources(map, overlayData) {
+  const { boundaryGeoJSON, roadsGeoJSON, lotsGeoJSON, homesGeoJSON, labelsGeoJSON } = overlayData;
+  
+  const s1 = map.getSource('site-boundary');
+  const s2 = map.getSource('roads');
+  const s3 = map.getSource('lots');
+  const s4 = map.getSource('homes');
+  const s5 = map.getSource('lot-labels');
+  
+  if (s1 && s2 && s3 && s4 && s5) {
+    s1.setData(boundaryGeoJSON);
+    s2.setData(roadsGeoJSON);
+    s3.setData(lotsGeoJSON);
+    s4.setData(homesGeoJSON);
+    s5.setData(labelsGeoJSON);
+    return true;
+  }
+  return false;
+}
+
+// Draggable corner markers for the site rectangle
+function createDragHandles(map, corners, onDrag) {
+  const markers = corners.map((lngLat, idx) => {
+    const el = document.createElement('div');
+    el.className = 'drag-handle';
+    el.style.cssText = `
+      width: 14px; height: 14px;
+      background: #ffffff;
+      border: 2px solid #3b82f6;
+      border-radius: 50%;
+      cursor: ${idx === 0 || idx === 2 ? 'nwse-resize' : 'nesw-resize'};
+      box-shadow: 0 0 6px rgba(0,0,0,0.4);
+    `;
+    
+    const marker = new maplibregl.Marker({ element: el, draggable: true })
+      .setLngLat(lngLat)
+      .addTo(map);
+    
+    marker.on('drag', () => onDrag(idx, marker.getLngLat()));
+    marker.on('dragend', () => onDrag(idx, marker.getLngLat(), true));
+    
+    return marker;
+  });
+  return markers;
+}
+
 
 export default function App() {
   // Site state
@@ -236,12 +314,13 @@ export default function App() {
   
   // UI state
   const [financialsCollapsed, setFinancialsCollapsed] = useState(false);
-  const [mapLoaded, setMapLoaded] = useState(false);
   const [mapStyle, setMapStyle] = useState('dark');
   
   // Map refs
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
+  const markersRef = useRef([]);
+  const overlayAddedRef = useRef(false);
   
   // Compute subdivision
   const results = useMemo(() => {
@@ -265,13 +344,81 @@ export default function App() {
     return lon - halfWidthDeg;
   }, [lon, widthFt, lat]);
 
-  // Initialize map
+  // Build overlay data
+  const overlayData = useMemo(() => {
+    return buildOverlayData(results, originLat, originLon, widthFt, depthFt);
+  }, [results, originLat, originLon, widthFt, depthFt]);
+
+  // Corner positions for drag handles [SW, SE, NE, NW]
+  const corners = useMemo(() => {
+    return [
+      feetToLatLon(originLat, originLon, 0, 0),           // SW
+      feetToLatLon(originLat, originLon, widthFt, 0),      // SE
+      feetToLatLon(originLat, originLon, widthFt, depthFt), // NE
+      feetToLatLon(originLat, originLon, 0, depthFt),       // NW
+    ];
+  }, [originLat, originLon, widthFt, depthFt]);
+
+  // Handle drag of corner markers
+  const handleCornerDrag = useCallback((cornerIdx, lngLat, isFinal = false) => {
+    const FEET_PER_METER = 3.28084;
+    const mPerDegLat = 111320;
+    const mPerDegLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    
+    // Get current corners in lng/lat
+    const sw = feetToLatLon(originLat, originLon, 0, 0);
+    const ne = feetToLatLon(originLat, originLon, widthFt, depthFt);
+    
+    let newSW = [...sw];
+    let newNE = [...ne];
+    
+    // Each corner controls two edges
+    switch (cornerIdx) {
+      case 0: // SW — controls left and bottom
+        newSW = [lngLat.lng, lngLat.lat];
+        break;
+      case 1: // SE — controls right and bottom
+        newNE[0] = lngLat.lng;
+        newSW[1] = lngLat.lat;
+        break;
+      case 2: // NE — controls right and top
+        newNE = [lngLat.lng, lngLat.lat];
+        break;
+      case 3: // NW — controls left and top
+        newSW[0] = lngLat.lng;
+        newNE[1] = lngLat.lat;
+        break;
+    }
+    
+    // Calculate new width and depth in feet
+    const dLon = newNE[0] - newSW[0];
+    const dLat = newNE[1] - newSW[1];
+    const newWidthFt = Math.round(Math.abs(dLon * mPerDegLon * FEET_PER_METER));
+    const newDepthFt = Math.round(Math.abs(dLat * mPerDegLat * FEET_PER_METER));
+    
+    // Calculate new center
+    const centerLat = (newSW[1] + newNE[1]) / 2;
+    const centerLon = (newSW[0] + newNE[0]) / 2;
+    
+    if (newWidthFt >= 50 && newDepthFt >= 50 && newWidthFt <= 5000 && newDepthFt <= 5000) {
+      setWidthFt(newWidthFt);
+      setDepthFt(newDepthFt);
+      setLat(centerLat);
+      setLon(centerLon);
+      if (isFinal) {
+        setAddressInput(`${centerLat.toFixed(4)}, ${centerLon.toFixed(4)}`);
+      }
+    }
+  }, [lat, lon, originLat, originLon, widthFt, depthFt]);
+
+  // Initialize map — only when style changes
   useEffect(() => {
-    // Clean up existing map
     if (mapRef.current) {
       mapRef.current.remove();
       mapRef.current = null;
-      setMapLoaded(false);
+      overlayAddedRef.current = false;
+      markersRef.current.forEach(m => m.remove());
+      markersRef.current = [];
     }
     
     const styleValue = MAP_STYLES[mapStyle] || MAP_STYLES.dark;
@@ -287,8 +434,26 @@ export default function App() {
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     
     map.on('load', () => {
-      addMapLayers(map);
-      setMapLoaded(true);
+      // Add overlay layers with current data
+      const currentOverlay = buildOverlayData(
+        computeSubdivision({ widthFt, depthFt, roadWidthFt, parcelTypes, financials }),
+        originLat, originLon, widthFt, depthFt
+      );
+      addOverlayLayers(map, currentOverlay);
+      overlayAddedRef.current = true;
+      
+      // Add drag handle markers
+      const currentCorners = [
+        feetToLatLon(originLat, originLon, 0, 0),
+        feetToLatLon(originLat, originLon, widthFt, 0),
+        feetToLatLon(originLat, originLon, widthFt, depthFt),
+        feetToLatLon(originLat, originLon, 0, depthFt),
+      ];
+      markersRef.current = createDragHandles(map, currentCorners, handleCornerDrag);
+      
+      // Fit map to site
+      const center = feetToLatLon(originLat, originLon, widthFt / 2, depthFt / 2);
+      map.easeTo({ center, zoom: 17, duration: 300 });
     });
     
     map.on('error', (e) => {
@@ -298,92 +463,34 @@ export default function App() {
     mapRef.current = map;
     
     return () => {
+      markersRef.current.forEach(m => m.remove());
+      markersRef.current = [];
       map.remove();
       mapRef.current = null;
+      overlayAddedRef.current = false;
     };
-  }, [mapStyle]);
+  }, [mapStyle]); // eslint-disable-line react-hooks/exhaustive-deps
   
-  // Update map overlays when results change
+  // Update overlays when data changes (without rebuilding the map)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapLoaded) return;
+    if (!map || !overlayAddedRef.current) return;
     
-    // Site boundary
-    const siteBoundary = siteRectToGeoJSON(originLat, originLon, widthFt, depthFt);
-    map.getSource('site-boundary')?.setData({
-      type: 'FeatureCollection',
-      features: [{
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [siteBoundary] }
-      }]
-    });
+    // Update sources
+    updateOverlaySources(map, overlayData);
     
-    // Roads
-    const roadFeatures = results.roads.map(road => ({
-      type: 'Feature',
-      geometry: {
-        type: 'Polygon',
-        coordinates: [rectToGeoJSON(originLat, originLon, road.x, road.y, road.width, road.height)]
-      }
-    }));
-    map.getSource('roads')?.setData({
-      type: 'FeatureCollection',
-      features: roadFeatures
-    });
+    // Update drag handle positions
+    if (markersRef.current.length === 4) {
+      corners.forEach((lngLat, i) => {
+        markersRef.current[i].setLngLat(lngLat);
+      });
+    }
     
-    // Lots
-    const lotFeatures = results.lots.map(lot => ({
-      type: 'Feature',
-      properties: {
-        color: lot.conforming ? lot.color : '#ef4444',
-        conforming: lot.conforming,
-        id: lot.id
-      },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [boundaryToGeoJSON(originLat, originLon, lot.lotBoundary)]
-      }
-    }));
-    map.getSource('lots')?.setData({
-      type: 'FeatureCollection',
-      features: lotFeatures
-    });
-    
-    // Home footprints
-    const homeFeatures = results.lots
-      .filter(lot => lot.conforming)
-      .map(lot => ({
-        type: 'Feature',
-        properties: { color: lot.color },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [boundaryToGeoJSON(originLat, originLon, lot.homeBoundary)]
-        }
-      }));
-    map.getSource('homes')?.setData({
-      type: 'FeatureCollection',
-      features: homeFeatures
-    });
-    
-    // Lot labels
-    const labelFeatures = results.lots.map(lot => {
-      const center = getBoundaryCenterLatLon(originLat, originLon, lot.lotBoundary);
-      return {
-        type: 'Feature',
-        properties: { label: String(lot.id) },
-        geometry: { type: 'Point', coordinates: center }
-      };
-    });
-    map.getSource('lot-labels')?.setData({
-      type: 'FeatureCollection',
-      features: labelFeatures
-    });
-    
-    // Fly to center
+    // Pan to center
     const center = feetToLatLon(originLat, originLon, widthFt / 2, depthFt / 2);
-    map.easeTo({ center, duration: 300 });
+    map.easeTo({ center, duration: 200 });
     
-  }, [results, originLat, originLon, widthFt, depthFt, mapLoaded]);
+  }, [overlayData, corners, originLat, originLon, widthFt, depthFt]);
   
   // Handle address/coordinate submit
   const handleLocationSubmit = useCallback(() => {
@@ -403,7 +510,7 @@ export default function App() {
       return;
     }
     
-    // Use Nominatim for geocoding (free, no API key)
+    // Nominatim geocoding (free, no API key)
     fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(input)}&limit=1`, {
       headers: { 'User-Agent': 'Subdivide/1.0' }
     })
@@ -462,10 +569,8 @@ export default function App() {
   
   const downloadPDF = useCallback(async () => {
     const { jsPDF } = await import('jspdf');
-    
     const pdf = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
     
-    // Header
     pdf.setFontSize(16);
     pdf.setFont('helvetica', 'bold');
     pdf.text('SUBDIVISION FEASIBILITY REPORT', 0.5, 0.7);
@@ -475,120 +580,85 @@ export default function App() {
     pdf.text(`Date: ${new Date().toLocaleDateString()}`, 0.5, 1.25);
     pdf.text(`Site: ${widthFt}ft x ${depthFt}ft (${(widthFt * depthFt / 43560).toFixed(2)} acres)`, 0.5, 1.5);
     
-    // Two-column layout
     let y = 2.0;
     const col2 = 5.5;
     
-    pdf.setFontSize(11);
-    pdf.setFont('helvetica', 'bold');
-    pdf.text('SUBDIVISIONS', 0.5, y);
-    y += 0.25;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(9);
+    pdf.setFontSize(11); pdf.setFont('helvetica', 'bold');
+    pdf.text('SUBDIVISIONS', 0.5, y); y += 0.25;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
     pdf.text(`Parcels: ${results.conformingLots}`, 0.5, y); y += 0.18;
     pdf.text(`Units: ${results.conformingLots}`, 0.5, y); y += 0.18;
     pdf.text(`NRSF: ${formatNumber(results.totalNRSF)} sq ft`, 0.5, y); y += 0.3;
     
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
     pdf.text('HOUSING / ROAD', 0.5, y); y += 0.25;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(9);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
     pdf.text(`Area Road: ${formatNumber(results.roadAreaFt2)} sq ft`, 0.5, y); y += 0.18;
     pdf.text(`Linear Road: ${formatNumber(results.roadLinearFt)} LF`, 0.5, y); y += 0.3;
     
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
     pdf.text('SUMMARY', 0.5, y); y += 0.25;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(9);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
     pdf.text(`Revenue: ${formatFullCurrency(results.revenue)}`, 0.5, y); y += 0.18;
     pdf.text(`Expenses: ${formatFullCurrency(results.expenses)}`, 0.5, y); y += 0.18;
     pdf.text(`NOI: ${formatFullCurrency(results.noi)}`, 0.5, y); y += 0.3;
     
-    // Column 2
     let y2 = 2.0;
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
     pdf.text('COSTS', col2, y2); y2 += 0.25;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(9);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
     pdf.text(`Land: ${formatFullCurrency(results.landCosts)}`, col2, y2); y2 += 0.18;
     pdf.text(`Hard: ${formatFullCurrency(results.hardCosts)}`, col2, y2); y2 += 0.18;
     pdf.text(`Soft: ${formatFullCurrency(results.softCosts)}`, col2, y2); y2 += 0.18;
     pdf.text(`Earthwork: $0 (V1 placeholder)`, col2, y2); y2 += 0.18;
     pdf.text(`Total: ${formatFullCurrency(results.totalCosts)}`, col2, y2); y2 += 0.3;
     
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
     pdf.text('METRICS', col2, y2); y2 += 0.25;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(9);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
     pdf.text(`Yield on Cost: ${formatPercent(results.yieldOnCost)}`, col2, y2); y2 += 0.18;
     pdf.text(`Cap Rate: ${formatPercent(results.capRate)}`, col2, y2); y2 += 0.18;
     pdf.text(`Value: ${formatFullCurrency(results.value)}`, col2, y2); y2 += 0.3;
     
-    // Lot table
     const maxY = Math.max(y, y2) + 0.3;
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
     pdf.text('LOT SCHEDULE', 0.5, maxY);
-    
-    pdf.setFontSize(8);
-    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8); pdf.setFont('helvetica', 'bold');
     const headers = ['#', 'Type', 'Width', 'Depth', 'Area', 'NRSF', 'Price', 'Conf.'];
     const colWidths = [0.3, 0.8, 0.5, 0.5, 0.7, 0.7, 0.8, 0.4];
     let tx = 0.5;
     const headerY = maxY + 0.25;
-    headers.forEach((h, i) => {
-      pdf.text(h, tx, headerY);
-      tx += colWidths[i];
-    });
+    headers.forEach((h, i) => { pdf.text(h, tx, headerY); tx += colWidths[i]; });
     
     pdf.setFont('helvetica', 'normal');
     let ly = headerY + 0.18;
-    const lotsToShow = results.lots.slice(0, 30);
-    lotsToShow.forEach(lot => {
+    results.lots.slice(0, 30).forEach(lot => {
       tx = 0.5;
-      const vals = [
-        String(lot.id), lot.parcelTypeName, 
-        lot.lotWidthFt.toFixed(0) + "'", lot.lotDepthFt.toFixed(0) + "'",
-        formatNumber(lot.areaFt2) + ' sf', formatNumber(lot.nrsf) + ' sf',
-        '$' + lot.pricePerLot.toLocaleString(), lot.conforming ? 'Yes' : 'No'
-      ];
-      vals.forEach((v, i) => {
-        pdf.text(v, tx, ly);
-        tx += colWidths[i];
-      });
+      [String(lot.id), lot.parcelTypeName, lot.lotWidthFt.toFixed(0)+"'", lot.lotDepthFt.toFixed(0)+"'",
+       formatNumber(lot.areaFt2)+' sf', formatNumber(lot.nrsf)+' sf',
+       '$'+lot.pricePerLot.toLocaleString(), lot.conforming?'Yes':'No'
+      ].forEach((v, i) => { pdf.text(v, tx, ly); tx += colWidths[i]; });
       ly += 0.15;
       if (ly > 7.8) return;
     });
     
-    // Footer
-    pdf.setFontSize(7);
-    pdf.setTextColor(128);
+    pdf.setFontSize(7); pdf.setTextColor(128);
     pdf.text('Generated by Subdivide — Preliminary feasibility only. Not for permitting, engineering, or construction use.', 0.5, 8.0);
-    
     pdf.save(`${lat.toFixed(4)}_${lon.toFixed(4)}_feasibility.pdf`);
   }, [results, lat, lon, widthFt, depthFt]);
   
   const downloadAll = useCallback(async () => {
     const JSZip = (await import('jszip')).default;
     const zip = new JSZip();
-    
     const prefix = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
     zip.file(`${prefix}_lots.csv`, generateCSV(results));
     zip.file(`${prefix}_subdivision.dxf`, generateDXF(results, widthFt, depthFt));
-    
     const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `${prefix}_subdivision_package.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    a.href = url; a.download = `${prefix}_subdivision_package.zip`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
   }, [results, lat, lon, widthFt, depthFt]);
   
   const activeType = parcelTypes[activeParcelTab] || parcelTypes[0];
@@ -608,7 +678,6 @@ export default function App() {
         </div>
         <span className="tagline">Single-Family Subdivision Feasibility</span>
         <div className="header-right">
-          {/* Map style toggle */}
           <div className="street-toggle" style={{ width: 'auto', minWidth: 200 }}>
             {Object.keys(MAP_STYLES).map(s => (
               <button key={s} className={`street-toggle-btn ${mapStyle === s ? 'active' : ''}`}
@@ -631,13 +700,10 @@ export default function App() {
               <span className="panel-section-title">Location</span>
             </div>
             <div className="address-row" style={{ marginBottom: 8 }}>
-              <input
-                className="form-input"
-                value={addressInput}
+              <input className="form-input" value={addressInput}
                 onChange={e => setAddressInput(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleLocationSubmit()}
-                placeholder="Lat, Lon or address"
-              />
+                placeholder="Lat, Lon or address" />
               <button className="btn btn-primary" onClick={handleLocationSubmit}>Go</button>
             </div>
             <div style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>
@@ -650,6 +716,9 @@ export default function App() {
             <div className="panel-section-header" style={{ cursor: 'default' }}>
               <span className="panel-section-title">Site Dimensions</span>
             </div>
+            <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, lineHeight: 1.4 }}>
+              Drag the corner handles on the map to resize, or type values below.
+            </p>
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Width (ft)</label>
@@ -827,19 +896,19 @@ export default function App() {
               <span className="panel-section-title">Export</span>
             </div>
             <div className="export-section">
-              <button className="btn btn-ghost btn-sm" onClick={downloadCSV} disabled={results.totalLots === 0}>
+              <button className="btn btn-ghost btn-sm" onClick={downloadCSV} disabled={results.totalLots===0}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 CSV
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={downloadDXF} disabled={results.totalLots === 0}>
+              <button className="btn btn-ghost btn-sm" onClick={downloadDXF} disabled={results.totalLots===0}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 DXF
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={downloadPDF} disabled={results.totalLots === 0}>
+              <button className="btn btn-ghost btn-sm" onClick={downloadPDF} disabled={results.totalLots===0}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 PDF
               </button>
-              <button className="btn btn-accent btn-sm" onClick={downloadAll} disabled={results.totalLots === 0}>
+              <button className="btn btn-accent btn-sm" onClick={downloadAll} disabled={results.totalLots===0}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 All .zip
               </button>
@@ -851,9 +920,6 @@ export default function App() {
         <div className="right-content">
           <div className="map-container">
             <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
-            {!mapLoaded && (
-              <div className="map-loading">Loading map...</div>
-            )}
             <div className="dimension-overlay">
               <strong>{widthFt}ft × {depthFt}ft</strong>{' '}
               <span>({(widthFt * depthFt / 43560).toFixed(2)} acres)</span>
@@ -925,10 +991,7 @@ function downloadFile(content, filename, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
 }
